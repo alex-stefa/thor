@@ -66,6 +66,7 @@ Z_BUF_ERR = -0x05
 
 Z_NO_FLUSH = 0x00
 Z_SYNC_FLUSH = 0x02
+Z_FULL_FLUSH = 0x03
 Z_FINISH = 0x04
 
 CHUNK = 1024 * 128  # FIXME: need to be smarter than this.
@@ -90,7 +91,8 @@ class Compressor:
         self.st.next_in   = C.cast(C.c_char_p(input), C.POINTER(C.c_ubyte))
         self.st.next_out  = C.cast(outbuf, C.POINTER(C.c_ubyte))
         self.st.avail_out = CHUNK
-        err = _zlib.deflate(C.byref(self.st), Z_SYNC_FLUSH)
+        # FIXME (Alex Stef): err = _zlib.deflate(C.byref(self.st), Z_SYNC_FLUSH)
+        err = _zlib.deflate(C.byref(self.st), Z_FULL_FLUSH)
         if err in [Z_OK, Z_STREAM_END]:
             return outbuf[:CHUNK-self.st.avail_out]
         else:
