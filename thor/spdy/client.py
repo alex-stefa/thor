@@ -360,8 +360,8 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
     
     def _handle_syn_stream(self, flags, stream_id, stream_assoc_id, 
         priority, slot, hdr_tuples):
-        raise NotImplementedError
-     
+        pass
+        
     def _handle_syn_reply(self, flags, stream_id, hdr_tuples):
         raise NotImplementedError
 
