@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Thor SPDY Server
+Thor SPDY Server--
 """
 
 __author__ = "Mark Nottingham <mnot@mnot.net>"
