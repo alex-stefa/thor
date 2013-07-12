@@ -129,12 +129,13 @@ class SpdyClientExchange(EventEmitter):
         self._pushed = False # is server pushed?
                 
     def __str__(self):
-        return ('[#%d A%s P%d %s %s %s]' % (
+        return ('[#%d A%s P%d%s %s %s %s%s]' % (
             str(self.stream_id) if self.stream_id else '?',
-            str(self.stream_assoc_id) if self.stream_assoc_id else '?',
+            str(self._stream_assoc_id) if self._stream_assoc_id else '?',
             self.priority,
-            StreamStates.str[self.stream_state],
-            ExchangeStates.str[self.exchg_state],
+            '!' if self._pushed else '',
+            StreamStates.str[self._stream_state],
+            ExchangeStates.str[self._exchg_state],
             strftime('%H:%M:%S', gmtime(self.timestamp))
         ))
 
@@ -357,6 +358,9 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
         # update last_ping_id
         
         #_set_read_timeout(self)
+        
+    def _handle_data(self, flags, stream_id, chunk):
+        pass
     
     def _handle_syn_stream(self, flags, stream_id, stream_assoc_id, 
         priority, slot, hdr_tuples):
@@ -365,13 +369,16 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
     def _handle_syn_reply(self, flags, stream_id, hdr_tuples):
         raise NotImplementedError
 
-    def _handle_rst_stream(self, flags, stream_id, status):
+    def _handle_rst_stream(self, stream_id, status):
+        raise NotImplementedError
+    
+    def _handle_settings(self, flags, settings_tuples):
         raise NotImplementedError
     
     def _handle_ping(self, ping_id):
         raise NotImplementedError
         
-    def _handle_goaway(self, last_stream_id, status):
+    def _handle_goaway(self, last_stream_id, reason):
         raise NotImplementedError
         
     def _handle_headers(self, flags, stream_id, hdr_tuples):
