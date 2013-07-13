@@ -307,6 +307,28 @@ def get_header(hdr_tuples, name):
                ]
             , [])
     ]
+
+def collapse_dups(hdr_tuples):
+    """
+    Given a list of header tuples, collapses values for identical header names
+    into a single string separated by nulls.
+    """
+    d = defaultdict(list)
+    for (n, v) in hdr_tuples:
+        out[n].extend([v])
+    return [(n, '\x00'.join(v)) for (n, v) in d.items()]
+    
+def expand_dups(hdr_tuples):
+    """
+    Given a list of header tuples, unpacks multiple null separated values
+    for the same header name.
+    """
+    out_tuples = list()
+    for (n, v) in hdr_tuples:
+        for val in v.split('\x00'):
+            if len(val) > 0:
+                out_tuples.append((n, val))
+    return out_tuples
     
 class HeaderDict(dict):
     """
@@ -611,7 +633,6 @@ class SpdyMessageHandler:
 
     def _parse_hdrs(self, data):
         "Given a control frame data block, return a list of (name, value) tuples."
-        # TODO: separate null-delimited into separate instances
         data = self._decompress(data) # FIXME: catch errors
         cursor = 4
         (num_hdrs,) = struct.unpack("!i", data[:cursor]) # FIXME: catch errors
@@ -637,7 +658,7 @@ class SpdyMessageHandler:
                 print len(data), cursor, data # FIXME
                 raise
             hdrs.append((name, value))
-        return hdrs
+        return expand_dups(hdrs)
         
     def _parse_settings(self, data):
         "Given a SETTINGS frame data block, return a list of (flag, id, value) settings tuples."
@@ -649,8 +670,8 @@ class SpdyMessageHandler:
     def _output(self, out):
         raise NotImplementedError
 
-    def _ser_syn_steam_frame(self, flags, stream_id, hdr_tuples, 
-        stream_assoc_id=0, priority=0, slot=0):
+    def _ser_syn_steam(self, flags, stream_id, hdr_tuples, 
+        priority=7, stream_assoc_id=0, slot=0):
         "Returns a SPDY SYN_STREAM frame."
         hdrs = self._compress(self._ser_hdrs(hdr_tuples))
         data = struct.pack("!IIBBH%ds" % len(hdrs),
@@ -662,18 +683,18 @@ class SpdyMessageHandler:
                 hdrs)
         return self._ser_ctl_frame(FrameTypes.SYN_STREAM, flags, data)
 
-    def _ser_syn_reply_frame(self, flags, stream_id, hdr_tuples):
+    def _ser_syn_reply(self, flags, stream_id, hdr_tuples):
         "Returns a SPDY SYN_REPLY frame."
         hdrs = self._compress(self._ser_hdrs(hdr_tuples))
         data = struct.pack("!I%ds" % len(hdrs), STREAM_MASK & stream_id, hdrs)
         return self._ser_ctl_frame(FrameTypes.SYN_REPLY, flags, data)
 
-    def _ser_rst_stream_frame(self, stream_id, status):
+    def _ser_rst_stream(self, stream_id, status):
         "Returns a SPDY RST_STREAM frame."
         data = struct.pack("!II", STREAM_MASK & stream_id, status)
         return self._ser_ctl_frame(FrameTypes.RST_STREAM, 0, data)
 
-    def _ser_settings_frame(self, flags, settings_tuples):
+    def _ser_settings(self, flags, settings_tuples):
         "Returns a SPDY SETTINGS frame."
         settings_tuples.sort(key=itemgetter(1))
         fmt = ["!I"]
@@ -684,28 +705,28 @@ class SpdyMessageHandler:
         data = struct.pack("".join(fmt), *args)
         return self._ser_ctl_frame(FrameTypes.SETTINGS, flags, data)
 
-    def _ser_ping_frame(self, ping_id):
+    def _ser_ping(self, ping_id):
         "Returns a SPDY PING frame."
         data = struct.pack("!I", ping_id)
         return self._ser_ctl_frame(FrameTypes.PING, 0, data)
         
-    def _ser_goaway_frame(self, last_stream_id, reason):
+    def _ser_goaway(self, last_stream_id, reason):
         "Returns a SPDY GOAWAY frame."
         data = struct.pack("!II", STREAM_MASK & last_stream_id, reason)
         return self._ser_ctl_frame(FrameTypes.GOAWAY, 0, data)
 
-    def _ser_headers_frame(self, flags, stream_id, hdr_tuples):
+    def _ser_headers(self, flags, stream_id, hdr_tuples):
         "Returns a SPDY HEADERS frame."
         hdrs = self._compress(self._ser_hdrs(hdr_tuples))
         data = struct.pack("!I%ds" % len(hdrs), STREAM_MASK & stream_id, hdrs)
         return self._ser_ctl_frame(FrameTypes.HEADERS, flags, data)
 
-    def _ser_window_update_frame(self, stream_id, size):
+    def _ser_window_update(self, stream_id, size):
         "Returns a SPDY WINDOW_UPDATE frame."
         data = struct.pack("!II", STREAM_MASK & stream_id, STREAM_MASK & size)
         return self._ser_ctl_frame(FrameTypes.WINDOW_UPDATE, 0, data)
 
-    def _ser_credential_frame(self, *args): # TODO: credentials frame support
+    def _ser_credential(self, *args): # TODO: credentials frame support
         "Returns a SPDY CREDENTIAL frame."
         return NotImplementedError
     
@@ -720,7 +741,7 @@ class SpdyMessageHandler:
                 data)
 
     @staticmethod
-    def _ser_data_frame(stream_id, flags, data):
+    def _ser_data_frame(flags, stream_id, data):
         "Returns a SPDY data frame."
         # TODO: check that stream_id and data len don't overflow
         return struct.pack("!II%ds" % len(data),
@@ -731,8 +752,8 @@ class SpdyMessageHandler:
     @staticmethod
     def _ser_hdrs(hdr_tuples):
         "Returns a SPDY header block from a list of (name, value) tuples."
-        # TODO: collapse dups into null-delimited
         hdr_tuples.sort() # required by Chromium
+        hdr_tuples = collapse_dups(hdr_tuples)
         fmt = ["!I"]
         args = [len(hdr_tuples)]
         for (n,v) in hdr_tuples:

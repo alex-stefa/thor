@@ -6,7 +6,7 @@ Thor SPDY Server--
 
 __author__ = "Mark Nottingham <mnot@mnot.net>"
 __copyright__ = """\
-Copyright (c) 2008-2011 Mark Nottingham
+Copyright (c) 2008-2013 Mark Nottingham, Alex Stefanescu
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -31,9 +31,16 @@ import os
 import sys
 import logging
 
-from common import SpdyMessageHandler, CTL_SYN_REPLY, FLAG_NONE, FLAG_FIN
-import thor.loop
-from thor.http.common import get_hdr, dummy
+import thor
+from thor.events import EventEmitter, on
+from thor.tcp import TcpClient
+from thor.spdy import error
+from thor.spdy.common import \
+    SpdyMessageHandler, \
+    invalid_hdrs, header_dict, get_header, \
+    InputStates, StreamStates, ExchangeStates, Flags, FrameTypes
+
+#-------------------------------------------------------------------------------
 
 # FIXME: assure that the connection isn't closed before reading the entire req body
 

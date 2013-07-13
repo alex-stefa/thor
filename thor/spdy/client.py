@@ -31,6 +31,7 @@ from collections import defaultdict
 from urlparse import urlsplit, urlunsplit
 from time import time, strftime, gmtime
 
+import thor
 from thor.events import EventEmitter, on
 from thor.tcp import TcpClient
 from thor.spdy import error
@@ -121,7 +122,7 @@ class SpdyClientExchange(EventEmitter):
         self.session = None
         self.timestamp = time()
         self.stream_id = None
-        self.priority = 0 # 0 highest to 7 lowest
+        self.priority = 7 # 0 highest to 7 lowest
         self._stream_assoc_id = None
         self._exchg_state = ExchangeStates.REQ_WAITING
         self._stream_state = StreamStates.OPEN
@@ -287,15 +288,15 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
         if done:
             exchange._stream_state = StreamStates.LOCAL_CLOSED
             exchange._exchg_state = ExchangeStates.REQ_DONE
-            self._output(self._ser_syn_frame(
-                FrameTypes.SYN_STREAM, Flags.FLAG_FIN, 
-                exchange.stream_id, req_hdrs, exchange.priority))
+            self._output(self._ser_syn_stream(
+                Flags.FLAG_FIN, exchange.stream_id, 
+                req_hdrs, exchange.priority))
             self._set_read_timeout(exchange, 'start')
         else:
             exchange.state = ExchangeStates.REQ_STARTED
-            self._output(self._ser_syn_frame(
-                FrameTypes.SYN_STREAM, Flags.FLAG_NONE, 
-                exchange.stream_id, req_hdrs, exchange.priority))
+            self._output(self._ser_syn_stream(
+                Flags.FLAG_NONE, exchange.stream_id, 
+                req_hdrs, exchange.priority))
     
     def _ensure_can_send(exchange):
         if exchange._exchg_state == ExchangeStates.REQ_WAITING:
@@ -312,13 +313,13 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
         if _ensure_can_send(exchange):
             req_hdrs = [(entry[0].lower, entry[1]) for entry in req_hdrs 
                 if not entry[0].lower() in req_remove_hdrs]
-            self._output(self._ser_headers_frame(
-                exchange.stream_id, Flags.FLAG_NONE, req_hdrs))
+            self._output(self._ser_headers(
+                Flags.FLAG_NONE, exchange.stream_id, req_hdrs))
     
     def _req_body(self, exchange, chunk):
         if _ensure_can_send(exchange):
             self._output(self._ser_data_frame(
-                exchange.stream_id, Flags.FLAG_NONE, chunk))
+                Flags.FLAG_NONE, exchange.stream_id, chunk))
     
     def _req_done(self, exchange):
         if _ensure_can_send(exchange):
@@ -326,7 +327,7 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
             exchange._stream_state = StreamStates.LOCAL_CLOSED
             self._set_read_timeout(exchange, 'start')
             self._output(self._ser_data_frame(
-                exchange.stream_id, Flags.FLAG_FIN, ''))
+                Flags.FLAG_FIN, exchange.stream_id, ''))
     
     ### Frame handling methods called by common.SpdyMessageHandler
     
