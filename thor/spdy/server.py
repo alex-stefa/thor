@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Thor SPDY Server--
+Thor SPDY Server
 """
 
 __author__ = "Mark Nottingham <mnot@mnot.net>"
@@ -30,157 +30,533 @@ THE SOFTWARE.
 import os
 import sys
 import logging
+from urlparse import urlsplit, urlunsplit
 
 import thor
 from thor.events import EventEmitter, on
-from thor.tcp import TcpClient
+from thor.tcp import TcpServer
 from thor.spdy import error
-from thor.spdy.common import \
-    SpdyMessageHandler, \
-    invalid_hdrs, header_dict, get_header, \
-    InputStates, StreamStates, ExchangeStates, Flags, FrameTypes
+from thor.spdy.common import *
+
+res_remove_hdrs = (invalid_hdrs + 
+    [':status', ':path', ':version', ':host', ':scheme'])
 
 #-------------------------------------------------------------------------------
 
-# FIXME: assure that the connection isn't closed before reading the entire req body
+# TODO: figure out appropriate logging
+# TODO: spdy over tls (needs npn support)
+# TODO: read timeout for receiving a complete request on a stream?
 
-class SpdyServer:
-    "An asynchronous SPDY server."
-    def __init__(self, host, port, request_handler, log=None):
-        self.request_handler = request_handler
-        self.server = push_tcp.create_server(host, port, self.handle_connection)
-        self.log = log
+class SpdyServer(EventEmitter):
+    """
+    An asynchronous SPDY server.
+    
+    Event handlers that can be added:
+        start()
+        stop()
+        exchange(exchange) -- a new request has been received
+    """
+    def __init__(self,
+            host='localhost',
+            port=8080,
+            idle_timeout=None, # seconds a conn is kept open until a frame is received
+            loop=None,
+            spdy_session_class=SpdyServerSession,
+            tcp_server_class=TcpServer):
+        EventEmitter.__init__(self)
+        self._idle_timeout = idle_timeout
+        self._spdy_session_class = spdy_session_class
+        self._tcp_server = tcp_server_class(host, port, loop=loop)
+        self._tcp_server.on('connect', self._handle_conn)
+        thor.schedule(0, self.emit, 'start') # FIXME: does this work?
+        
+        # TODO:
+        self.use_tls = False # TODO: SPDY over TLS
+        self.certfile = None
+        self.keyfile = None
+ 
+    def _handle_conn(self, tcp_conn):
+        """
+        Process a new client connection, tcp_conn.
+        """
+        session = self._spdy_session_class(self, tcp_conn)
+        session._set_idle_timeout()
+        tcp_conn.on('data', session._handle_input)
+        tcp_conn.on('close', session._handle_closed)
+        tcp_conn.on('pause', session._handle_pause)
+        tcp_conn.pause(False)
+        
+    def shutdown(self):
+        """
+        Stop the server.
+        """
+        self._tcp_server.shutdown()
+        self.emit('stop')
+        # TODO: close existing sessions? (we have no reference to them here..)
 
-    def handle_connection(self, tcp_conn):
-        "Process a new push_tcp connection, tcp_conn."
-        conn = SpdyServerConnection(self.request_handler, tcp_conn, self.log)
-        return conn._handle_input, conn._conn_closed, conn._res_body_pause
+#-------------------------------------------------------------------------------
 
+class SpdyServerExchange(EventEmitter, SpdyExchange):
+    """
+    A SPDY request-response exchange with support for server push streams.
 
-class SpdyServerConnection(SpdyMessageHandler):
-    "A handler for a SPDY server connection."
-    def __init__(self, request_handler, tcp_conn, log=None):
-        SpdyMessageHandler.__init__(self)
-        self.request_handler = request_handler
-        self._tcp_conn = tcp_conn
-        self.log = log or dummy
-        self._streams = {}
-        self._res_body_pause_cb = False
-        self.log.debug("new connection %s" % id(self))
-
-    def res_start(self, stream_id, status_code, status_phrase, res_hdrs, res_body_pause):
-        "Start a response. Must only be called once per response."
-        self.log.debug("res_start %s" % stream_id)
-        self._res_body_pause_cb = res_body_pause
-        res_hdrs.append(('status', "%s %s" % (status_code, status_phrase)))
-        # TODO: hop-by-hop headers?
-        self._output(self._ser_syn_frame(CTL_SYN_REPLY, FLAG_NONE, stream_id, res_hdrs))
-        def res_body(*args):
-            return self.res_body(stream_id, *args)
-        def res_done(*args):
-            return self.res_done(stream_id, *args)
-        return res_body, res_done
-
-    def res_body(self, stream_id, chunk):
-        "Send part of the response body. May be called zero to many times."
-        if chunk:
-            self._output(self._ser_data_frame(stream_id, FLAG_NONE, chunk))
-
-    def res_done(self, stream_id, err):
+    Event handlers that can be added:
+        request_start(hdr_dict)
+        request_headers(hdr_dict)
+        request_body(chunk)
+        request_done()
+        pause(paused)
+        error(err)
+    """
+    def __init__(self, server):
+        EventEmitter.__init__(self)
+        SpdyExchange.__init__(self)
+        self.server = server
+        
+    ### "Public" methods
+   
+    def response_start(self, res_hdrs, status="200 OK", uri=None, done=False):
+        """
+        Start a response to the request received by the exchange with specified 
+        response status and headers as a list of (field_name, field_value). 
+        
+        The @uri of the response resource is necessary if it is a pushed stream.
+        
+        If @done is True, the response is sent immediately with an empty body.
+        """
+        # TODO: more elegant status specification?
+        # TODO: find out where to connect to the hard way
+        if self._pushed:
+            if not uri:
+                self.emit('error', 
+                    error.UrlError('Missing URI for pushed resource.'))
+                return
+            (scheme, authority, path, query, fragment) = urlsplit(uri)
+            scheme = scheme.lower()
+            if scheme != 'http':
+                self.emit('error', 
+                    error.UrlError('Only HTTP URLs are supported.'))
+                return
+            if '@' in authority:
+                userinfo, authority = authority.split('@', 1)
+            authority = authority.lower()
+            path = '/' + urlunsplit(('', '', path, query, fragment))
+            self.session._res_start(self, status, scheme, authority, path,
+                res_hdrs, done)
+        else:
+            self.session._res_start(self, status, None, None, None,
+                res_hdrs, done)
+        
+    def response_headers(self, res_hdrs):
+        """
+        Send additional response headers.
+        """
+        self.session._res_headers(self, res_hdrs)
+        
+    def response_body(self, chunk):
+        """
+        Send part of the response body. May be called zero to many times.
+        """
+        self.session._res_body(self, chunk)
+        
+    def response_done(self):
         """
         Signal the end of the response, whether or not there was a body. MUST be
-        called exactly once for each response.
-
-        If err is not None, it is an error dictionary (see the error module)
-        indicating that an HTTP-specific (i.e., non-application) error occured
-        in the generation of the response; this is useful for debugging.
+        called exactly once for each response. 
         """
-        self._output(self._ser_data_frame(stream_id, FLAG_FIN, ""))
-        # TODO: delete stream after checking that input side is half-closed
+        self.session._res_done(self)
+        
+    def push_response(self):
+        """
+        Create a pushed exchange associated to the current exchange. 
+        This exchange will not be receiving request_XXX events, and should
+        be used by calling the response_XXX methods.
+        """
+        return self.session._init_pushed_exchg(self)
+        
+    def cancel(self):
+        """
+        Sends a RST_STREAM frame with CANCEL status code to indicate that
+        the SPDY stream associated to this exchange should be cancelled.
+        """
+        self.session._close_exchg(self, StatusCodes.CANCEL)
+        
+#-------------------------------------------------------------------------------
 
-    def req_body_pause(self, paused):
-        "Indicate that the server should pause (True) or unpause (False) the request."
-        if self._tcp_conn and self._tcp_conn.tcp_connected:
-            self._tcp_conn.pause(paused)
+class SpdyServerConnection(SpdyMessageHandler, EventEmitter):
+    """
+    A SPDY connection to a client.
 
-    # Methods called by push_tcp
+    Event handlers that can be added:
+        frame(frame)
+        pause(paused)
+        error(err)
+        close()
+    """
+    def __init__(self, server, tcp_conn)
+        SpdyMessageHandler.__init__(self)
+        EventEmitter.__init__(self)
+        self.server = server
+        self.tcp_conn = tcp_conn
+        self.exchanges = dict()
+        self._highest_created_stream_id = -1
+        self._highest_accepted_stream_id = 0
+        self._highest_ping_id = 0
+        self._write_queue = [[] for x in Priority.range]
+        self._write_pending = False
+        self._output_paused = False
+        self._idle_timeout_ev = None
+        
+    def __repr__(self):
+        status = [self.__class__.__module__ + "." + self.__class__.__name__]
+        if self.tcp_conn:
+            status.append(
+              self.tcp_conn.tcp_connected and 'connected' or 'disconnected')
+        return "<%s at %#x>" % (", ".join(status), id(self))
 
-    def _res_body_pause(self, paused):
-        "Pause/unpause sending the response body."
-        if self._res_body_pause_cb:
-            self._res_body_pause_cb(paused)
+    ### "Public" methods
+    
+    @property
+    def is_active(self):
+        return self.tcp_conn is not None
 
-    def _conn_closed(self):
-        "The server connection has closed."
-        pass # FIXME: any cleanup necessary?
-#        self.pause()
-#        self.tcp_conn.handler = None
-#        self.tcp_conn = None
+    def close(self, reason=GoawayReasons.OK):
+        """
+        Tear down the SPDY session for given reason.
+        """
+        if not self.is_active:
+            return
+        if reason is not None:
+            self._queue_frame(
+                Priority.MAX,
+                GoawayFrame(self._highest_accepted_stream_id, reason))
+        self._clear_idle_timeout()
+        self._close_active_exchanges(error.ConnectionClosedError(
+                'Local endpoint has closed the connection.'))
+        if self.tcp_conn:
+            self.tcp_conn.close()
+            self.tcp_conn = None
+        self.emit('close')
+        
+    def pause_input(self, paused):
+        """
+        Temporarily stop / restart sending the request body.
+        """
+        if self.tcp_conn and self.tcp_conn.tcp_connected:
+            self.tcp_conn.pause(paused)
+            
+    ### Helper methods
 
-    # Methods called by common.SpdyRequestHandler
+    def _next_created_stream_id(self):
+        self._highest_created_stream_id = max(
+            self._highest_created_stream_id + 2,
+            self._highest_accepted_stream_id + 1)
+        if self._highest_created_stream_id > MAX_STREAM_ID:
+            raise ValueError('Next stream ID is larger than 31 bits.')
+        return self._highest_created_stream_id
+    
+    def _init_pushed_exchg(self, assoc_exchg):
+        pushed_exchg = SpdyServerExchange(self.server)
+        pushed_exchg.session = self
+        pushed_exchg.stream_id = self._next_created_stream_id()
+        pushed_exchg.priority = assoc_exchg.priority
+        pushed_exchg._stream_assoc_id = assoc_exchg.stream_id
+        pushed_exchg._pushed = True
+        pushed_exchg._req_state = ExchangeStates.DONE
+        pushed_exchg._res_state = ExchangeStates.WAITING
+        self.exchanges[pushed_exchg.stream_id] = pushed_exchg
+        return pushed_exchg
+
+    def _ensure_can_init(self, exchange):
+        if exchange._res_state != ExchangeStates.WAITING:
+            exchange.emit('error', 
+                error.ExchangeStateError('Response already sent.'))
+            return False
+        if exchange._pushed:
+            try:
+                assoc_exchg = self.exchanges[exchange._stream_assoc_id]
+                if assoc_exchg._res_state == ExchangeStates.DONE:
+                    exchange.emit('error',
+                        err.ExchangeStateError('Cannot push new stream for '
+                        'closed associated stream.'))
+                    return False
+            except:
+                exchange.emit('error',
+                    err.ExchangeStateError('Cannot push new stream for '
+                    'unknown associated stream.'))
+                return False
+        return True
+        
+    def _ensure_can_send(self, exchange):
+        if exchange._res_state == ExchangeStates.WAITING:
+            exchange.emit('error', 
+                error.ExchangeStateError('Response headers not sent.'))
+            return False
+        elif exchange._res_state == ExchangeStates.DONE:
+            exchange.emit('error', 
+                error.ExchangeStateError('Response already sent.'))
+            return False
+        return True
+        
+    ### Exchange response methods 
+    
+    def _res_start(self, exchange, status, scheme, host, path, res_hdrs, done):
+        if not self._ensure_can_init(exchange):
+            return
+        res_hdrs = clean_headers(res_hdrs, res_remove_hdrs)
+        # FIXME: is status necessary on pushed streams?
+        req_hdrs.append((':status', str(status) if status else ''))
+        req_hdrs.append((':version', 'HTTP/1.1'))
+        fin_flag = Flags.FLAG_FIN if done else Flags.FLAG_NONE
+        if exchange._pushed:
+            req_hdrs.append((':scheme', scheme if scheme else ''))
+            req_hdrs.append((':host', host if host else ''))
+            req_hdrs.append((':path', path if path else ''))
+            self._queue_frame(
+                exchange.priority,
+                SynStreamFrame(
+                    Flags.FLAG_FIN if done else Flags.FLAG_UNIDIRECTIONAL,
+                    exchange.stream_id, 
+                    res_hdrs,
+                    exchange.priority,
+                    exchange._stream_assoc_id,
+                    0))
+        else:
+            self._queue_frame(
+                exchange.priority,
+                SynReplyFrame(
+                    Flags.FLAG_FIN if done else Flags.FLAG_NONE,
+                    exchange.stream_id, 
+                    res_hdrs))
+        exchange._res_state = ExchangeStates.DONE if done else ExchangeStates.STARTED
+            
+    def _res_headers(self, exchange, res_hdrs):
+        if self._ensure_can_send(exchange):
+            res_hdrs = clean_headers(res_hdrs, res_remove_hdrs)
+            self._queue_frame(
+                exchange.priority,
+                HeadersFrame(
+                    Flags.FLAG_NONE,
+                    exchange.stream_id, 
+                    res_hdrs))
+    
+    def _res_body(self, exchange, chunk):
+        if self._ensure_can_send(exchange) and chunk is not None:
+            self._queue_frame(
+                exchange.priority,
+                DataFrame(
+                    Flags.FLAG_NONE,
+                    exchange.stream_id, 
+                    chunk))
+    
+    def _res_done(seld, exchange):
+        if self._ensure_can_send(exchange):
+            self._queue_frame(
+                exchange.priority,
+                DataFrame(
+                    Flags.FLAG_FIN,
+                    exchange.stream_id, 
+                    ''))
+            exchange._res_state = DONE
+
+    ### Error handler method called by common.SpdyMessageHandler
+         
+    def _handle_error(self, err, status=None, stream_id=None):
+        """
+        Properly handle a SPDY stream-level error with given @status code
+        for @stream_id, or a session-level error if @stream_id is None.
+        """
+        if stream_id is None: # session error
+            if err is not None:
+                self.emit('error', err)
+            self._close_active_exchanges(err)
+            self._close(status)
+        else: # stream error
+            try:
+                exchange = self.exchanges[stream_id]
+            except:
+                exchange = None
+            if exchange:
+                if err is not None:
+                    exchange.emit('error', err)
+                self._close_exchange(exchange, status)
+            
+    def _close_exchange(self, exchange, status=None):
+        """
+        Closes the SPDY stream with given status code.
+        """
+        exchange._req_state = DONE
+        exchange._res_state = DONE
+        if status is not None:
+            self._queue_frame(
+                Priority.MAX,
+                RstStreamFrame(exchange.stream_id, status))
+        # TODO: when to remove closed exchange from self.exchanges?
+    
+    def _close_active_exchanges(self, err=None):
+        """
+        Closes all active exchanges, issuing given error.
+        """
+        for (stream_id, exchange) in self.exchanges.items():
+            if exchange.is_active:
+                self._close_exchg(exchange, None)
+                if err is not None:
+                    exchange.emit('error', err)
+                
+    ### Output-related method called by common.SpdyMessageHandler
+    
+    def _has_write_data(self):
+        if self._output_paused:
+            return False
+        for p in Priority.range:
+            if len(self._write_queue[p]) > 0:
+                return True
+        return False
+
+    def _write_frame_callback(self):
+        """
+        Find the highest priority data chunk and send it.
+        """
+        self._write_pending = False
+        for p in Priority.range:
+            if len(self._write_queue[p]) > 0:
+                frame = self._write_queue[p][0]
+                self._write_queue[p] = self._write_queue[p][1:]
+                self._output(frame.serialize(self))
+                break
+        if self._has_write_data():
+            self._schedule_write()
+        
+    def _schedule_write(self):
+        if not self._write_pending:
+            thor.schedule(0, self._write_frame_callback)
+            self._write_pending = True
+
+    def _queue_frame(self, priority, frame):
+        self._output_paused = False
+        self._clear_idle_timeout()
+        self._set_idle_timeout()
+        self._write_queue[priority].append(frame)
+        self._schedule_write()
 
     def _output(self, chunk):
-        if self._tcp_conn:
-            self._tcp_conn.write(chunk)
+        if self.tcp_conn and self.tcp_conn.tcp_connected:
+            self.tcp_conn.write(chunk)
 
-    def _input_start(self, stream_id, hdr_tuples):
-        self.log.debug("request start %s %s" % (stream_id, hdr_tuples))
-        method = get_hdr(hdr_tuples, 'method')[0] # FIXME: error handling
-        uri = get_hdr(hdr_tuples, 'url')[0] # FIXME: error handling
-        assert not self._streams.has_key(stream_id) # FIXME
-        def res_start(*args):
-            return self.res_start(stream_id, *args)
-        # TODO: sanity checks / catch errors from requst_handler
-        self._streams[stream_id] = self.request_handler(
-            method, uri, hdr_tuples, res_start, self.req_body_pause)
+    ### Methods called by tcp
+    
+    def _handle_closed(self):
+        """
+        The remote client closed the connection.
+        """
+        if self._input_buffer:
+            self._handle_input('')
+        self._handle_error(error.ConnectionClosedError(
+            'Remote endpoint has closed the connection.'))
+        # TODO: what if conn closed while in the middle of reading frame data?
+        
+    def _handle_pause(self, paused):
+        """
+        The server needs the application to pause/unpause the response body.
+        """
+        self.emit('pause', paused)
+        for (stream_id, exchange) in self.exchanges.items():
+            if exchange.is_active:
+                exchange.emit('pause', paused)
+        self._output_paused = paused
+        if not paused:
+            self._schedule_write()
+        
+    ### Timeouts
+    
+    def _set_idle_timeout(self):
+        """
+        Set the session idle timeout.
+        """
+        if self.server._idle_timeout and self._idle_timeout_ev is None:
+            self._idle_timeout_ev = thor.schedule(
+                self.server._idle_timeout,
+                self._handle_error,
+                error.IdleTimeoutError('No frame received for %d seconds.' 
+                    % self.server._idle_timeout),
+                GoawayReasons.OK)
+    
+    def _clear_idle_timeout(self):
+        """
+        Clear the session idle timeout.
+        """
+        if self._idle_timeout_ev:
+            self._idle_timeout_ev.delete()
+            self._idle_timeout_ev = None
 
-    def _input_body(self, stream_id, chunk):
-        "Process a request body chunk from the wire."
-        self._streams[stream_id][0](chunk)
+    ### Frame input handler method called by common.SpdyMessageHandler
+    
+    def _valid_new_stream_id(self, stream_id):
+        """
+        0 is not a valid Stream-ID.
+        If a client receives a server push stream with stream-id 0, it 
+        MUST issue a session error (Section 2.4.1) with the status code 
+        PROTOCOL_ERROR.
+        """
+        if stream_id == 0:
+            self._handle_error(error.StreamIdError(
+                'Invalid stream ID 0.'), GoawayReasons.PROTOCOL_ERROR)
+            return False
+        """
+        The stream-id MUST increase with each new stream. If an endpoint 
+        receives a SYN_STREAM with a stream id which is less than any 
+        previously received SYN_STREAM, it MUST issue a session error 
+        (Section 2.4.1) with the status PROTOCOL_ERROR.
+        """
+        if stream_id < self._highest_accepted_stream_id:
+            self._handle_error(error.StreamIdError(
+                'New stream ID %d is less than previously received IDs.' %
+                stream_id), GoawayReasons.PROTOCOL_ERROR)
+            return False
+        """
+        It is a protocol error to send two SYN_STREAMs with the same stream-id. 
+        If a recipient receives a second SYN_STREAM for the same stream, it 
+        MUST issue a stream error (Section 2.4.2) with the status code 
+        PROTOCOL_ERROR.
+        """
+        if stream_id == self._highest_accepted_stream_id:
+            self._handle_error(error.StreamIdError(
+                'Duplicate SYN_STREAM received for the last accepted stream ID %d.' %
+                stream_id), StatusCodes.PROTOCOL_ERROR, stream_id)
+            return False
+        """
+        If the server is initiating the stream, the Stream-ID must be even.
+        """
+        if stream_id % 2 == 1:
+            self._handle_error(error.StreamIdError(
+                'New stream ID %d expected to be even.' %
+                stream_id), GoawayReasons.PROTOCOL_ERROR)
+            return False
+        return True
+        
+    def _valid_created_stream_id(self, stream_id):
+        try:
+            exchange = self.exchanges[stream_id]
+        except:
+            
+            
+    def _valid_accepted_stream_id(self, stream_id):
+        
+    
+    def _handle_frame(self, frame):
+        self._clear_idle_timeout()
+        self._set_idle_timeout()
+        
+        if frame.type == FrameTypes.SYN_STREAM:
+        
+            if frame.
+            
+            
+        #elif frame.type
+            
+    
 
-    def _input_end(self, stream_id):
-        "Indicate that the request body is complete."
-        self._streams[stream_id][1](None)
-        # TODO: delete stream if output side is half-closed.
-
-    def _input_error(self, stream_id, err, detail=None):
-        "Indicate a parsing problem with the request body."
-        # FIXME: rework after fixing spdy_common
-        err['detail'] = detail
-        if self._tcp_conn:
-            self._tcp_conn.close()
-            self._tcp_conn = None
-        self._streams[stream_id][1](err)
-
-    # TODO: re-evaluate if this is necessary in SPDY
-    def _handle_error(self, err, detail=None):
-        "Handle a problem with the request by generating an appropriate response."
-        if detail:
-            err['detail'] = detail
-        status_code, status_phrase = err.get('status', ('400', 'Bad Request'))
-        hdrs = [
-            ('Content-Type', 'text/plain'),
-        ]
-        body = err['desc']
-        if err.has_key('detail'):
-            body += " (%s)" % err['detail']
-        self.res_start(status_code, status_phrase, hdrs, dummy)
-        self.res_body(body)
-        self.res_done()
-
-
-def test_handler(method, uri, hdrs, res_start, req_pause):
-    """
-    An extremely simple (and limited) server request_handler.
-    """
-    code = "200"
-    phrase = "OK"
-    res_hdrs = [('Content-Type', 'text/plain'), ('version', 'HTTP/1.1')]
-    res_body, res_done = res_start(code, phrase, res_hdrs, dummy)
-    res_body('This is SPDY.')
-    res_done(None)
-    return dummy, dummy
-
+#-------------------------------------------------------------------------------
 
 if __name__ == "__main__":
     logging.basicConfig()

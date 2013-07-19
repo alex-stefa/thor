@@ -71,9 +71,6 @@ class HttpVersionError(SpdyError):
     desc = "Unrecognised HTTP version"
     server_status = ("505", "HTTP Version Not Supported")
 
-class ReadTimeoutError(SpdyError):
-    desc = "Read Timeout"
-
 class TransferCodeError(SpdyError):
     desc = "Unknown request transfer coding"
     server_status = ("501", "Not Implemented")
@@ -92,38 +89,71 @@ class TooManyMsgsError(SpdyError):
 
 # client-specific errors
 
-class UrlError(SpdyError):
-    desc = "Unsupported or invalid URI"
-    server_status = ("400", "Bad Request")
-    client_recoverable = True
+#class UrlError(SpdyError):
+#    desc = "Unsupported or invalid URI"
+#    server_status = ("400", "Bad Request")
+#    client_recoverable = True
 
 class LengthRequiredError(SpdyError):
     desc = "Content-Length required"
     server_status = ("411", "Length Required")
     client_recoverable = True
 
-class ConnectError(SpdyError):
-    desc = "Connection error"
-    server_status = ("504", "Gateway Timeout")
+#class ConnectError(SpdyError):
+#    desc = "Connection error"
+#    server_status = ("504", "Gateway Timeout")
 
+    
 # server-specific errors
 
 class HostRequiredError(SpdyError):
     desc = "Host header required"
     server_recoverable = True
 
+
+
+
+
+
+
+
+
+
+# timeout errors
+
+class ReadTimeoutError(SpdyError):
+    desc = "Read Timeout"
+
+class IdleTimeoutError(SpdyError):
+    desc = "Idle Timeout"
+
+# TCP connection errors
+
+class ConnectionClosedError(SpdyError):
+    desc = "TCP connection has been closed"
+
+class ConnectError(SpdyError):
+    desc = "TCP Connection failed"
     
-# SPDY specific errors 
+# SPDY stream specific errors 
+
+class UrlError(SpdyError):
+    desc = "Unsupported or invalid URI"
+    
+class ExchangeCancelledError(SpdyError):
+    desc = "Remote endpoint cancelled the stream"
+    
+class ExchangeStateError(SpdyError):
+    desc = "Cannot perform operation"
+
+# SPDY session specific errors
+
+class FrameSizeError(SpdyError):
+    desc = "Invalid frame size received."
     
 class StreamIdError(SpdyError):
     desc = "Invalid stream ID for session"
-    client_recoverable = True
 
-class ExchangeStateError(SpdyError):
-    desc = "Cannot perform operation"
-    client_recoverable = True
-    
 class HeaderError(SpdyError):
     desc = "Invalid headers"
-    client_recoverable = True
     

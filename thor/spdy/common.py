@@ -3,7 +3,7 @@
 """
 shared SPDY infrastructure
 
-This module contains utility functions for nbhttp and a base class
+This module contains utility functions for thor and a base class
 for the SPDY-specific portions of the client and server.
 """
 
@@ -31,9 +31,12 @@ THE SOFTWARE.
 """
 
 import struct
+import time
 from urlparse import urlunsplit
 from collections import defaultdict
 from operator import itemgetter
+
+from thor.spdy import error
 
 compressed_hdrs = True
 try:
@@ -47,7 +50,7 @@ except TypeError:
 
 #-------------------------------------------------------------------------------
 
-dictionary_chars = [
+_dictionary_chars = [
 	0x00, 0x00, 0x00, 0x07, 0x6f, 0x70, 0x74, 0x69,   # - - - - o p t i
 	0x6f, 0x6e, 0x73, 0x00, 0x00, 0x00, 0x04, 0x68,   # o n s - - - - h
 	0x65, 0x61, 0x64, 0x00, 0x00, 0x00, 0x04, 0x70,   # e a d - - - - p
@@ -227,12 +230,14 @@ dictionary_chars = [
 	0x31, 0x2c, 0x75, 0x74, 0x66, 0x2d, 0x2c, 0x2a,   # 1 - u t f - - -
 	0x2c, 0x65, 0x6e, 0x71, 0x3d, 0x30, 0x2e          # - e n q - 0 -
 ]
-dictionary = ''.join([chr(c) for c in dictionary_chars])
+dictionary = ''.join([chr(c) for c in _dictionary_chars])
                    
 #-------------------------------------------------------------------------------
 
 def dummy(*args, **kw):
-    "Dummy method that does nothing; useful to ignore a callback."
+    """
+    Dummy method that does nothing; useful to ignore a callback.
+    """
     pass
 
 # see http://stackoverflow.com/questions/36932/how-can-i-represent-an-enum-in-python
@@ -315,7 +320,7 @@ def collapse_dups(hdr_tuples):
     """
     d = defaultdict(list)
     for (n, v) in hdr_tuples:
-        out[n].extend([v])
+        d[n].extend([v])
     return [(n, '\x00'.join(v)) for (n, v) in d.items()]
     
 def expand_dups(hdr_tuples):
@@ -330,9 +335,24 @@ def expand_dups(hdr_tuples):
                 out_tuples.append((n, val))
     return out_tuples
     
+def clean_headers(hdr_tuples, invalid_hdrs):
+    """
+    Given a list of header tuples, filters out tuples with empty header names
+    or in the specified invalid header names list.
+    """
+    clean_tuples = list()
+    for entry in hdr_tuples:
+        if not entry[0]:
+            continue
+        name = entry[0].strip().lower()
+        value = entry[1] if entry[1] else ''
+        if name not in invalid_hdrs:
+            clean_tuples.append((name, value))
+    return clean_tuples
+    
 class HeaderDict(dict):
     """
-    Standard dict() with additional helper methods for headers
+    Standard dict() with additional helper methods for headers.
     """
     @property
     def method(self):
@@ -383,12 +403,6 @@ class HeaderDict(dict):
     
 #-------------------------------------------------------------------------------
 
-Flags = enum(
-    FLAG_NONE = 0x00, 
-    FLAG_FIN = 0x01, 
-    FLAG_UNIDIRECTIONAL = 0x02
-    FLAG_SETTINGS_CLEAR_SETTINGS = 0x01)
-
 FrameTypes = enum(
     DATA = 0x00,
     SYN_STREAM = 0x01,
@@ -401,6 +415,12 @@ FrameTypes = enum(
     WINDOW_UPDATE = 0x09,
     CREDENTIAL = 0x10)
     
+Flags = enum(
+    FLAG_NONE = 0x00, 
+    FLAG_FIN = 0x01, 
+    FLAG_UNIDIRECTIONAL = 0x02
+    FLAG_SETTINGS_CLEAR_SETTINGS = 0x01)
+
 StatusCodes = enum(
     PROTOCOL_ERROR = 1,
     INVALID_STREAM = 2, 
@@ -420,6 +440,7 @@ GoawayReasons = enum(
     INTERNAL_ERROR = 2)
 
 SettingsFlags = enum(
+    FLAG_SETTINGS_NONE = 0x00,
     FLAG_SETTINGS_PERSIST_VALUE = 0x01,
     FLAG_SETTINGS_PERSISTED = 0x02)
     
@@ -433,19 +454,306 @@ SettingsIDs = enum(
     SETTINGS_INITIAL_WINDOW_SIZE = 7,
     SETTINGS_CLIENT_CERTIFICATE_VECTOR_SIZE = 8)
 
-CTL_FRM = 0x8003 # control bit (=1) and SPDY version for control frames
-STREAM_MASK = 0x7fffffff # masks control bit (=0) for data frames 
+Priority = enum(
+    MIN = 7,
+    MAX = 0,
+    range = xrange(0, 8), # FIXME: replace with range(..) if Python 3.x
+    count = 8)    
+
+STREAM_MASK = 0x7fffffff # masks control bit (=0) 
+MAX_STREAM_ID = 1 << 31 - 1 # maximum possible stream ID (31 bits)
+
+#-------------------------------------------------------------------------------
+
+class SpdyFrame(object):    
+    """
+    Base type for all SPDY frames.
+    """    
+    def __init__(self, type, flags):
+        self.type = type
+        self.flags = flags
+    
+    def __str__(self):
+        return '>> [%s] %s' % (FrameTypes.str[self.type], Flags.str[self.flags])
+        
+    @staticmethod
+    def _serialize_control_frame(type, flags, data):
+        # TODO: check that data len doesn't overflow
+        return struct.pack("!HHI%ds" % len(data),
+                0x8003, # control bit (=1) and SPDY/3 version
+                type,
+                (flags << 24) + len(data),
+                data)
+
+    @staticmethod
+    def _serialize_headers(hdr_tuples):
+        hdr_tuples.sort() # required by Chromium
+        hdr_tuples = collapse_dups(hdr_tuples)
+        fmt = ["!I"]
+        args = [len(hdr_tuples)]
+        for (n,v) in hdr_tuples:
+            # TODO: check for overflowing n, v lengths
+            fmt.append("I%dsI%ds" % (len(n), len(v)))
+            args.extend([len(n), n, len(v), v])
+        return struct.pack("".join(fmt), *args)
+        
+    @staticmethod
+    def _str_tuples(hdr_tuples):
+        return '\t' + '\n\t'.join(['%s: %s' % (n, v) for (n, v) in hdr_tuples])
+
+    def serialize(self, context):
+        """
+        Serializes the frame to a byte string. Needs a compression context.
+        """
+        return NotImplementedError
+        
+class DataFrame(SpdyFrame):
+    """
+    A SPDY DATA frame.
+    """
+    def __init__(self, flags, stream_id, data):
+        SpdyFrame.__init__(self, FrameTypes.DATA, flags)
+        self.stream_id = stream_id
+        self.data = data
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' #%d L%d\n\t%s' % (
+            self.stream_id, len(self.data), data[:70])
+        
+    def serialize(self, context):
+        # TODO: check that stream_id and data len don't overflow
+        return struct.pack("!II%ds" % len(self.data),
+                STREAM_MASK & self.stream_id,
+                (self.flags << 24) + len(self.data),
+                self.data)
+        
+class SynSteamFrame(SpdyFrame):
+    """
+    A SPDY SYN_STREAM frame.
+    """
+    def __init__(self, flags, stream_id, hdr_tuples, 
+            priority=Priority.MIN, stream_assoc_id=0, slot=0):
+        SpdyFrame.__init__(self, FrameTypes.SYN_STREAM, flags)
+        self.stream_id = stream_id
+        self.hdr_tuples = hdr_tuples
+        self.priority = priority
+        self.stream_assoc_id = stream_assoc_id
+        self.slot = slot
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' #%d A%d P%d S%d H%d\n%s' % (
+            self.stream_id,
+            self.stream_assoc_id,
+            self.priority,
+            self.slot,
+            len(self.hdr_tuples),
+            self._str_tuples(self.hdr_tuples))
+
+    def serialize(self, context):
+        hdrs = context._compress(self._serialize_headers(self.hdr_tuples))
+        data = struct.pack("!IIBBH%ds" % len(hdrs),
+                STREAM_MASK & self.stream_id,
+                STREAM_MASK & self.stream_assoc_id,
+                (self.priority << 5),
+                self.slot,
+                0x0000, # padding
+                hdrs)
+        return self._serialize_control_frame(self.type, self.flags, data)
+
+class SynReplyFrame(SpdyFrame):
+    """
+    A SPDY SYN_REPLY frame.
+    """
+    def __init__(self, flags, stream_id, hdr_tuples):
+        SpdyFrame.__init__(self, FrameTypes.SYN_REPLY, flags)
+        self.stream_id = stream_id
+        self.hdr_tuples = hdr_tuples
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' #%d H%d\n%s' % (
+            self.stream_id, 
+            len(self.hdr_tuples), 
+            self._str_tuples(self.hdr_tuples))
+
+    def serialize(self, context):
+        hdrs = context._compress(self._serialize_headers(self.hdr_tuples))
+        data = struct.pack("!I%ds" % len(hdrs), 
+                STREAM_MASK & self.stream_id, 
+                hdrs)
+        return self._serialize_control_frame(self.type, self.flags, data)
+    
+class HeadersFrame(SpdyFrame):
+    """
+    A SPDY HEADERS frame.
+    """
+    def __init__(self, flags, stream_id, hdr_tuples):
+        SpdyFrame.__init__(self, FrameTypes.HEADERS, flags)
+        self.stream_id = stream_id
+        self.hdr_tuples = hdr_tuples
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' #%d H%d\n%s' % (
+            self.stream_id, 
+            len(self.hdr_tuples), 
+            self._str_tuples(self.hdr_tuples))
+
+    def serialize(self, context):
+        hdrs = context._compress(self._serialize_headers(self.hdr_tuples))
+        data = struct.pack("!I%ds" % len(hdrs), 
+                STREAM_MASK & self.stream_id, 
+                hdrs)
+        return self._serialize_control_frame(self.type, self.flags, data)
+    
+class RstStreamFrame(SpdyFrame):
+    """
+    A SPDY RST_STREAM frame.
+    """
+    def __init__(self, stream_id, status):
+        SpdyFrame.__init__(self, FrameTypes.RST_STREAM, Flags.FLAG_NONE)
+        self.stream_id = stream_id
+        self.status = status
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' #%d %s' % (
+            self.stream_id, StatusCodes.str[self.status])
+
+    def serialize(self, context):
+        data = struct.pack("!II", STREAM_MASK & self.stream_id, self.status)
+        return self._serialize_control_frame(self.type, self.flags, data)
+
+class SettingsFrame(SpdyFrame):
+    """
+    A SPDY SETTINGS frame.
+    """
+    def __init__(self, flags, settings_tuples):
+        SpdyFrame.__init__(self, FrameTypes.SETTINGS, flags)
+        self.settings_tuples = settings_tuples
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + '\n\t%s' % (
+            '\n\t'.join(['%s = %s (%s)' % (
+                    SettingsIDs.str[s_id],
+                    str(s_val),
+                    SettingsFlags.str[s_flag]) 
+                for (s_flag, s_id, s_val) in self.settings_tuples]))
+
+    def serialize(self, context):
+        self.settings_tuples.sort(key=itemgetter(1))
+        fmt = ["!I"]
+        args = [len(self.settings_tuples)]
+        for (flag, id, value) in self.settings_tuples:
+            fmt.append("II")
+            args.extend([(flag << 24) + id, value])
+        data = struct.pack("".join(fmt), *args)
+        return self._serialize_control_frame(self.type, self.flags, data)
+        
+class PingFrame(SpdyFrame):
+    """
+    A SPDY PING frame.
+    """
+    def __init__(self, ping_id):
+        SpdyFrame.__init__(self, FrameTypes.PING, Flags.FLAG_NONE)
+        self.ping_id = ping_id
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' PING_ID=%d' % self.ping_id
+
+    def serialize(self, context):
+        data = struct.pack("!I", self.ping_id)
+        return self._serialize_control_frame(self.type, self.flags, data)
+        
+class GoawayFrame(SpdyFrame):
+    """
+    A SPDY GOAWAY frame.
+    """
+    def __init__(self, last_stream_id, reason):
+        SpdyFrame.__init__(self, FrameTypes.GOAWAY, Flags.FLAG_NONE)
+        self.last_stream_id = last_stream_id
+        self.reason = reason
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' #%d %s' % (
+            self.last_stream_id, GoawayReasons.str[self.reason])
+
+    def serialize(self, context):
+        data = struct.pack("!II", 
+                STREAM_MASK & self.last_stream_id, 
+                self.reason)
+        return self._serialize_control_frame(self.type, self.flags, data)
+
+class WindowUpdateFrame(SpdyFrame):
+    """
+    A SPDY WINDOW_UPDATE frame.
+    """
+    def __init__(self, stream_id, size):
+        SpdyFrame.__init__(self, FrameTypes.WINDOW_UPDATE, Flags.FLAG_NONE)
+        self.stream_id = stream_id
+        self.size = size
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ' #%d SIZE=%d' % (
+            self.stream_id, self.size)
+
+    def serialize(self, context):
+        data = struct.pack("!II", 
+                STREAM_MASK & self.stream_id, 
+                STREAM_MASK & self.size)
+        return self._serialize_control_frame(self.type, self.flags, data)
+        
+class CredentialFrame(SpdyFrame): # TODO: add CREDENTIAL frame support
+    """
+    A SPDY CREDENTIAL frame.
+    """
+    def __init__(self, *args):
+        SpdyFrame.__init__(self, FrameTypes.CREDENTIAL, Flags.FLAG_NONE)
+        
+    def __str__(self):
+        return SpdyFrame.__str__(self) + ''
+
+    def serialize(self, context):
+        data = ''
+        return self._serialize_control_frame(self.type, self.flags, data)
+    
+#-------------------------------------------------------------------------------
+
+ExchangeStates = enum('WAITING', 'STARTED', 'DONE')
+# FIXME: do we need an ERROR state?
+
+class SpdyExchange(object):
+    """
+    Holds information about a SPDY request-response exchange (a SPDY stream).
+    """
+    def __init__(self):
+        self.session = None
+        self.timestamp = time.time()
+        self.stream_id = None
+        self.priority = Priority.MIN
+        self._stream_assoc_id = None
+        self._req_state = ExchangeStates.WAITING
+        self._res_state = ExchangeStates.WAITING
+        self._pushed = False # is server pushed?
+                
+    def __str__(self):
+        return ('[#%s A%s P%d%s REQ_%s RES_%s %s]' % (
+            str(self.stream_id) if self.stream_id else '?',
+            str(self._stream_assoc_id) if self._stream_assoc_id else '?',
+            self.priority,
+            '!' if self._pushed else '',
+            ExchangeStates.str[self._req_state],
+            ExchangeStates.str[self._res_state],
+            time.strftime('%H:%M:%S', time.gmtime(self.timestamp))
+        ))
+    
+    @property
+    def is_active(self):
+        return (self._req_state != ExchangeStates.DONE or
+                self._res_state != ExchangeStates.DONE)
+                
+#-------------------------------------------------------------------------------
 
 InputStates = enum('WAITING', 'READING_FRAME_DATA')
-
-ExchangeStates = enum('REQ_WAITING', 'REQ_STARTED', 'REQ_DONE', 
-    'RES_STARTED', 'RES_DONE')
-
-StreamStates = enum('OPEN', 'REMOTE_CLOSED', 'REPLIED', 
-    'LOCAL_CLOSED', 'ERROR', 'CLOSED')
-# TODO: review spdy/3 spec for more accurate states; remove ExchangeStates
     
-class SpdyMessageHandler:
+class SpdyMessageHandler(object):
     """
     This is a base class for something that has to parse and/or serialize
     SPDY messages, request or response.
@@ -456,7 +764,6 @@ class SpdyMessageHandler:
     For serialising, it expects you to override _output.
     """
     def __init__(self):
-        self.log = lambda a:a # TODO: think about logging support
         self._input_buffer = ""
         self._input_state = InputStates.WAITING
         self._input_frame_type = None
@@ -469,46 +776,26 @@ class SpdyMessageHandler:
         else:
             self._compress = dummy
             self._decompress = dummy
-
-    ### frame handlers
-    
-    def _handle_data(self, flags, stream_id, chunk):
-        raise NotImplementedError
+        self._max_control_frame_size = 8192 
+        """
+        Note that full length control frames (16MB) can be large for 
+        implementations running on resource-limited hardware. In such cases,
+        implementations MAY limit the maximum length frame supported. However,
+        all implementations MUST be able to receive control frames of at least 
+        8192 octets in length.
+        """
         
-    def _handle_syn_stream(self, flags, stream_id, stream_assoc_id, 
-        priority, slot, hdr_tuples):
-        raise NotImplementedError
-     
-    def _handle_syn_reply(self, flags, stream_id, hdr_tuples):
-        raise NotImplementedError
-
-    def _handle_rst_stream(self, stream_id, status):
+    ### main frame handling method
+    
+    def _handle_frame(self, frame):
         raise NotImplementedError
     
-    def _handle_settings(self, flags, settings_tuples):
-        raise NotImplementedError
-
-    def _handle_ping(self, ping_id):
-        raise NotImplementedError
-        
-    def _handle_goaway(self, last_stream_id, reason):
-        raise NotImplementedError
-        
-    def _handle_headers(self, flags, stream_id, hdr_tuples):
-        raise NotImplementedError
-     
-    def _handle_window_update(self, stream_id, size):
-        raise NotImplementedError
-
-    def _handle_credential(*args): # TODO: credentials frame support
-        raise NotImplementedError
+    ### error handler
     
-    ### event handlers
-    
-    def _handle_error(self, err):
+    def _handle_error(self, err, status=None, stream_id=None):
         raise NotImplementedError
 
-    ### input-related methods
+    ### input event handlers called from _handle_frame(..)
     
     def _input_start(self, stream_id, stream_assoc_id, hdr_tuples, priority):
         "Indicate the beginning of a response or a new pushed stream."
@@ -528,6 +815,14 @@ class SpdyMessageHandler:
 
     def _input_error(self, err):
         "Indicate a parsing problem with the body."
+        raise NotImplementedError
+
+    ### output-related methods
+
+    def _queue_frame(self, priority, frame):
+        raise NotImplementedError
+        
+    def _output(self, chunk):
         raise NotImplementedError
 
     ### frame parsing methods
@@ -561,64 +856,68 @@ class SpdyMessageHandler:
                 frame_data = data[:self._input_frame_len]
                 rest = data[self._input_frame_len:]
                 if self._input_frame_type == FrameTypes.DATA:
-                    self._handle_data(
+                    self._handle_frame(DataFrame(
                         self._input_flags, 
                         self._input_stream_id, 
-                        frame_data)
+                        frame_data))
                 elif self._input_frame_type == FrameTypes.SYN_STREAM:
                     # FIXME: what if they lied about the frame len?
                     # FIXME: assert frame len > 20
                     (s_id, sa_id, pri, slot) = struct.unpack("!IIBB", frame_data[:10])
                     hdr_tuples = self._parse_hdrs(frame_data[12:])
                     # FIXME: proper error on failure
-                    self._handle_syn_stream(
+                    self._handle_frame(SynSteamFrame(
                         self._input_flags,
                         s_id & STREAM_MASK,
                         sa_id & STREAM_MASK,
                         pri >> 5,
                         slot,
-                        hdr_tuples)
+                        hdr_tuples))
                 elif self._input_frame_type == FrameTypes.SYN_REPLY:
                     # FIXME: assert frame len > 12
                     s_id = struct.unpack("!I", frame_data[:4])[0]
                     hdr_tuples = self._parse_hdrs(frame_data[4:])
                     # FIXME: proper error on failure
-                    self._handle_syn_reply(
+                    self._handle_frame(SynReplyFrame(
                         self._input_flags,
                         s_id & STREAM_MASK,
-                        hdr_tuples)
+                        hdr_tuples))
                 elif self._input_frame_type == FrameTypes.RST_STREAM:
                     # FIXME: assert frame len = 16
                     (s_id, status) = struct.unpack("!II", frame_data)
-                    self._handle_rst_stream(s_id & STREAM_MASK, status)
+                    self._handle_frame(RstStreamFrame(
+                        s_id & STREAM_MASK, status))
                 elif self._input_frame_type == FrameTypes.SETTINGS:
                     # FIXME: assert frame len > 8
                     settings_tuples = self._parse_settings(frame_data)
                     # FIXME: proper error on failure
-                    self._handle_settings(self._input_flags, settings_tuples)
+                    self._handle_frame(SettingsFrame(
+                        self._input_flags, settings_tuples))
                 elif self._input_frame_type == FrameTypes.PING:
                     # FIXME: assert frame len = 12
                     ping_id = struct.unpack("!I", frame_data)[0]
-                    self._handle_ping(ping_id)
+                    self._handle_frame(PingFrame(
+                        ping_id))
                 elif self._input_frame_type == FrameTypes.GOAWAY:
                     # FIXME: assert frame len = 16
                     (lgs_id, reason) = struct.unpack("!II", frame_data)
-                    self._handle_goaway(lgs_id & STREAM_MASK, reason)
+                    self._handle_frame(GoawayFrame(
+                        lgs_id & STREAM_MASK, reason))
                 elif self._input_frame_type == FrameTypes.HEADERS:
                     # FIXME: assert frame len > 12
                     s_id = struct.unpack("!I", frame_data[:4])[0]
                     hdr_tuples = self._parse_hdrs(frame_data[4:])
                     # FIXME: proper error on failure
-                    self._handle_headers(
+                    self._handle_frame(HeadersFrame(
                         self._input_flags,
                         s_id & STREAM_MASK,
-                        hdr_tuples)
+                        hdr_tuples))
                 elif self._input_frame_type == FrameTypes.WINDOW_UPDATE:
                     # FIXME: assert frame len = 16
                     (s_id, size) = struct.unpack("!II", frame_data)
-                    self._handle_window_update(
+                    self._handle_frame(WindowUpdateFrame(
                         s_id & STREAM_MASK,
-                        size & STREAM_MASK)
+                        size & STREAM_MASK))
                 elif self._input_frame_type == FrameTypes.CREDENTIAL:
                     raise NotImplementedError
                 else: # unknown frame type
@@ -632,7 +931,9 @@ class SpdyMessageHandler:
             raise Exception, "Unknown input state %s" % self._input_state
 
     def _parse_hdrs(self, data):
-        "Given a control frame data block, return a list of (name, value) tuples."
+        """
+        Given a control frame data block, return a list of (name, value) tuples.
+        """
         data = self._decompress(data) # FIXME: catch errors
         cursor = 4
         (num_hdrs,) = struct.unpack("!i", data[:cursor]) # FIXME: catch errors
@@ -659,105 +960,28 @@ class SpdyMessageHandler:
                 raise
             hdrs.append((name, value))
         return expand_dups(hdrs)
-        
+    
+    # TODO: use this somewhere?
+    def _valid_frame_size(self, size, stream_id):
+        """
+        If an endpoint receives a SYN_STREAM/REPLY which is larger than the 
+        implementation supports, it MAY send a RST_STREAM with error code 
+        FRAME_TOO_LARGE.
+        """
+        if size > self._max_control_frame_size:
+            self._handle_error(
+                error.FrameSizeError('Received control frame size %d '
+                    'exceeded maximum accepted size %d.' %
+                    size, self._max_control_frame_size), 
+                StatusCodes.FRAME_TOO_LARGE, 
+                stream_id)
+            return False
+        return True
+    
     def _parse_settings(self, data):
-        "Given a SETTINGS frame data block, return a list of (flag, id, value) settings tuples."
+        """
+        Given a SETTINGS frame data block, return a list of (flag, id, value) 
+        settings tuples.
+        """
         # TODO:
         
-        
-    ### output-related methods
-
-    def _output(self, out):
-        raise NotImplementedError
-
-    def _ser_syn_steam(self, flags, stream_id, hdr_tuples, 
-        priority=7, stream_assoc_id=0, slot=0):
-        "Returns a SPDY SYN_STREAM frame."
-        hdrs = self._compress(self._ser_hdrs(hdr_tuples))
-        data = struct.pack("!IIBBH%ds" % len(hdrs),
-                STREAM_MASK & stream_id,
-                STREAM_MASK & stream_assoc_id,
-                (priority << 5),
-                slot,
-                0x0000, # padding
-                hdrs)
-        return self._ser_ctl_frame(FrameTypes.SYN_STREAM, flags, data)
-
-    def _ser_syn_reply(self, flags, stream_id, hdr_tuples):
-        "Returns a SPDY SYN_REPLY frame."
-        hdrs = self._compress(self._ser_hdrs(hdr_tuples))
-        data = struct.pack("!I%ds" % len(hdrs), STREAM_MASK & stream_id, hdrs)
-        return self._ser_ctl_frame(FrameTypes.SYN_REPLY, flags, data)
-
-    def _ser_rst_stream(self, stream_id, status):
-        "Returns a SPDY RST_STREAM frame."
-        data = struct.pack("!II", STREAM_MASK & stream_id, status)
-        return self._ser_ctl_frame(FrameTypes.RST_STREAM, 0, data)
-
-    def _ser_settings(self, flags, settings_tuples):
-        "Returns a SPDY SETTINGS frame."
-        settings_tuples.sort(key=itemgetter(1))
-        fmt = ["!I"]
-        args = [len(settings_tuples)]
-        for (flag, id, value) in settings_tuples:
-            fmt.append("II")
-            args.extend([(flag << 24) + id, value])
-        data = struct.pack("".join(fmt), *args)
-        return self._ser_ctl_frame(FrameTypes.SETTINGS, flags, data)
-
-    def _ser_ping(self, ping_id):
-        "Returns a SPDY PING frame."
-        data = struct.pack("!I", ping_id)
-        return self._ser_ctl_frame(FrameTypes.PING, 0, data)
-        
-    def _ser_goaway(self, last_stream_id, reason):
-        "Returns a SPDY GOAWAY frame."
-        data = struct.pack("!II", STREAM_MASK & last_stream_id, reason)
-        return self._ser_ctl_frame(FrameTypes.GOAWAY, 0, data)
-
-    def _ser_headers(self, flags, stream_id, hdr_tuples):
-        "Returns a SPDY HEADERS frame."
-        hdrs = self._compress(self._ser_hdrs(hdr_tuples))
-        data = struct.pack("!I%ds" % len(hdrs), STREAM_MASK & stream_id, hdrs)
-        return self._ser_ctl_frame(FrameTypes.HEADERS, flags, data)
-
-    def _ser_window_update(self, stream_id, size):
-        "Returns a SPDY WINDOW_UPDATE frame."
-        data = struct.pack("!II", STREAM_MASK & stream_id, STREAM_MASK & size)
-        return self._ser_ctl_frame(FrameTypes.WINDOW_UPDATE, 0, data)
-
-    def _ser_credential(self, *args): # TODO: credentials frame support
-        "Returns a SPDY CREDENTIAL frame."
-        return NotImplementedError
-    
-    @staticmethod
-    def _ser_ctl_frame(type, flags, data):
-        "Returns a SPDY control frame."
-        # TODO: check that data len doesn't overflow
-        return struct.pack("!HHI%ds" % len(data),
-                CTL_FRM,
-                type,
-                (flags << 24) + len(data),
-                data)
-
-    @staticmethod
-    def _ser_data_frame(flags, stream_id, data):
-        "Returns a SPDY data frame."
-        # TODO: check that stream_id and data len don't overflow
-        return struct.pack("!II%ds" % len(data),
-                STREAM_MASK & stream_id,
-                (flags << 24) + len(data),
-                data)
-
-    @staticmethod
-    def _ser_hdrs(hdr_tuples):
-        "Returns a SPDY header block from a list of (name, value) tuples."
-        hdr_tuples.sort() # required by Chromium
-        hdr_tuples = collapse_dups(hdr_tuples)
-        fmt = ["!I"]
-        args = [len(hdr_tuples)]
-        for (n,v) in hdr_tuples:
-            # TODO: check for overflowing n, v lengths
-            fmt.append("I%dsI%ds" % (len(n), len(v)))
-            args.extend([len(n), n, len(v), v])
-        return struct.pack("".join(fmt), *args)
