@@ -38,8 +38,7 @@ from thor.tcp import TcpClient
 from thor.spdy import error
 from thor.spdy.common import *
     
-req_remove_hdrs = (invalid_hdrs + 
-    [':method', ':path', ':version', ':host', ':scheme'])
+req_remove_hdrs = invalid_hdrs + request_hdrs
 
 #-------------------------------------------------------------------------------
 
@@ -55,12 +54,14 @@ class SpdyClient(EventEmitter):
     def __init__(self, 
             connect_timeout=None, 
             read_timeout=None, 
+            idle_timeout=None, 
             loop=None, 
             spdy_session_class=SpdyClientSession, 
             tcp_client_class=TcpClient):
         EventEmitter.__init__(self)
         self._connect_timeout = connect_timeout
         self._read_timeout = read_timeout
+        self._idle_timeout = idle_timeout
         self._sessions = dict()
         self._loop = loop or thor.loop._loop
         self._loop.on('stop', self.close)
@@ -81,7 +82,7 @@ class SpdyClient(EventEmitter):
         except KeyError:
             session = self._spdy_session_class(self, origin)
             tcp_client = self._tcp_client_class(self._loop)
-            tcp_client.on('connect', session._handle_connect)
+            tcp_client.on('connect', session._bind)
             tcp_client.on('connect_error', session._handle_connect_error)
             tcp_client.connect(host, port, self._connect_timeout)
             self.sessions[origin] = session
@@ -118,7 +119,7 @@ class SpdyClient(EventEmitter):
         
 #-------------------------------------------------------------------------------
 
-class SpdyClientExchange(EventEmitter, SpdyExchange):
+class SpdyClientExchange(SpdyExchange):
     """
     A SPDY request-response exchange with support for server push streams
 
@@ -132,7 +133,6 @@ class SpdyClientExchange(EventEmitter, SpdyExchange):
         error(err)
     """
     def __init__(self, client):
-        EventEmitter.__init__(self)
         SpdyExchange.__init__(self)
         self.client = client
         self._read_timeout_ev = None
@@ -198,102 +198,33 @@ class SpdyClientExchange(EventEmitter, SpdyExchange):
 
 #-------------------------------------------------------------------------------
 
-class SpdyClientSession(SpdyMessageHandler, EventEmitter):
+class SpdyClientSession(SpdySession):
     """
     A SPDY connection to a server.
-
-    Event handlers that can be added:
-        frame(frame)
-        pause(paused)
-        error(err)
-        close()
     """
     def __init__(self, client, origin):
-        SpdyMessageHandler.__init__(self)
-        EventEmitter.__init__(self)
+        SpdySession.__init__(self, True, client._idle_timeout)
         self.client = client
-        self.tcp_conn = None
         self.origin = origin # (host, port)
-        self.exchanges = dict()
-        self._highest_stream_id = 0
-        self._highest_ping_id = 0
+        self._read_timeout = client._read_timeout
         self._output_buffer = list()
-        self._read_timeout_ev = None
 
-    def __repr__(self):
-        status = [self.__class__.__module__ + "." + self.__class__.__name__]
-        if self.tcp_conn:
-            status.append(
-              self.tcp_conn.tcp_connected and 'connected' or 'disconnected')
-        return "<%s at %#x>" % (", ".join(status), id(self))
-    
     ### "Public" methods
     
-    @property
-    def is_active(self):
-        return self.tcp_conn is not None
-                
     def close(self, reason=GoawayReasons.OK):
-        """
-        Tear down the SPDY session for given reason.
-        """
-        if not self.is_active:
-            return
-        if reason is not None:
-            self._queue_frame(
-                Priority.MAX,
-                GoawayFrame(self._highest_stream_id, reason))
-        self._clear_read_timeout(self)
-        self._close_active_exchanges(error.ConnectionClosedError(
-                'Local endpoint has closed the connection.'))
-        if self.tcp_conn:
-            self.tcp_conn.close()
-            self.tcp_conn = None
+        SpdySession.close(self, reason)
         self.client._remove_session(self)
-        self.emit('close')
 
-    def pause_input(self, paused):
-        """
-        Temporarily stop / restart sending the response body.
-        """
-        if self.tcp_conn and self.tcp_conn.tcp_connected:
-            self.tcp_conn.pause(paused)
-        
-    ### Helper methods
-    
-    def _validate_stream_id(self, stream_id, existing=True):
-        if existing:
-            if stream_id not in self.streams:
-                return error.StreamIdError('#%d is unknown' % stream_id))
-        else:
-            if stream_id < self.highest_stream_id:
-                return error.StreamIdError('#%d already seen' % stream_id))
-            if stream_id % 2 == 1:
-                return error.StreamIdError('#%d expected even' % stream_id))
-        return None
-
-    def _validate_headers(self, hdr_tuples):
-        status = get_header(hdr_tuples, ':status')
-        if len(status) == 0:
-            return error.HeaderError('missing :status header'))
-        if len(status) > 1:
-            return error.HeaderError('multiple :status headers received'))
-        version = get_header(hdr_tuples, ':version')
-        if len(version) == 0:
-            return error.HeaderError('missing :version header'))
-        if len(version) > 1:
-            return error.HeaderError('multiple :version headers received'))
-            
-    def _next_stream_id(self):
-        self._highest_stream_id = self._next_odd(self._highest_stream_id)
-        if self._highest_stream_id > MAX_STREAM_ID:
-            raise ValueError('Next stream ID is larger than 31 bits.')
-        return self._highest_stream_id
+    ### Exchange request methods
                 
     def _ensure_can_init(self, exchange):
         if exchage._pushed:
             exchange.emit('error', error.ExchangeStateError(
                 'Cannont make a request on a pushed stream.'))
+            return False
+        if self._received_goaway:
+            exchange.emit('error', error.ExchangeStateError(
+                'Cannot make new request after receiving session GOAWAY.'))
             return False
         if exchange._req_state != ExchangeStates.WAITING:
             exchange.emit('error', 
@@ -315,8 +246,6 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
                 error.ExchangeStateError('Request already sent.'))
             return False
         return True
-
-    ### Exchange request methods 
     
     def _req_start(self, exchange, method, scheme, host, path, req_hdrs, done):
         if not self._ensure_can_init(exchange):
@@ -327,7 +256,7 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
         req_hdrs.append((':scheme', scheme if scheme else ''))
         req_hdrs.append((':host', host if host else ''))
         req_hdrs.append((':path', path if path else ''))
-        exchange.stream_id = self._next_stream_id()
+        exchange.stream_id = self._next_created_stream_id()
         exchange.session = self
         self.exchanges[exchange.stream_id] = exchange
         if done:
@@ -383,55 +312,12 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
                     ''))
             exchange._req_state = ExchangeStates.DONE
             self._set_read_timeout(exchange, 'start')
-    
-    ### Error handler method called by common.SpdyMessageHandler
-         
-    def _handle_error(self, err, status=None, stream_id=None):
-        """
-        Properly handle a SPDY stream-level error with given @status code
-        for @stream_id, or a session-level error if @stream_id is None.
-        """
-        if stream_id is None: # session error
-            if err is not None:
-                self.emit('error', err)
-            self._close_active_exchanges(err)
-            self._close(status)
-        else: # stream error
-            try:
-                exchange = self.exchanges[stream_id]
-            except:
-                exchange = None
-            if exchange:
-                if err is not None:
-                    exchange.emit('error', err)
-                self._close_exchange(exchange, status)
-    
-    def _close_exchange(self, exchange, status=None):
-        """
-        Closes the SPDY stream with given status code.
-        """
-        exchange._req_state = DONE
-        exchange._res_state = DONE
-        self._clear_read_timeout(exchage)
-        if status is not None:
-            self._queue_frame(
-                Priority.MAX,
-                RstStreamFrame(exchange.stream_id, status))
-        # TODO: when to remove closed exchange from self.exchanges?
-    
-    def _close_active_exchanges(self, err=None):
-        """
-        Closes all active exchanges, issuing given error.
-        """
-        for (stream_id, exchange) in self.exchanges.items():
-            if exchange.is_active:
-                self._close_exchg(exchange, None)
-                if err is not None:
-                    exchange.emit('error', err)
                     
-    ### Output-related method called by common.SpdyMessageHandler
+    ### Output-related methods called by common.SpdyMessageHandler
 
     def _queue_frame(self, priority, frame):
+        self._clear_idle_timeout()
+        self._set_idle_timeout()
         self._output(frame.serialize(self))
 
     def _output(self, chunk):
@@ -440,72 +326,31 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
             self.tcp_conn.write(''.join(self._output_buffer))
             self._output_buffer = []
 
-    ### Methods called by tcp
+    ### TCP handling methods
     
-    def _handle_connect(self, tcp_conn):
-        """
-        The connection to the server has succeeded.
-        """
-        self.tcp_conn = tcp_conn
-        self._set_read_timeout(self, 'connect')
-        tcp_conn.on('data', self._handle_input)
-        tcp_conn.on('close', self._handle_closed)
-        tcp_conn.on('pause', self._handle_pause)
-        # FIXME: should this be done AFTER _req_start?
-        self._output('') # kick the output buffer
-        self.tcp_conn.pause(False)
-
     def _handle_connect_error(self, err_type, err_id, err_str):
         """
         The connection to the server has failed.
         """
         self._handle_error(error.ConnectError(err_str))
         
-    def _handle_closed(self):
-        """
-        The server closed the connection.
-        """
-        self._clear_read_timeout(self)
-        if self._input_buffer:
-            self._handle_input('')
-        self._handle_error(error.ConnectionClosedError(
-            'Remote endpoint has closed the connection.'))
-        # TODO: what if conn closed while in the middle of reading frame data?
-        
     def _handle_pause(self, paused):
-        """
-        The client needs the application to pause/unpause the request body.
-        """
-        self.emit('pause', paused)
-        for (stream_id, exchange) in self.exchanges.items():
-            if exchange.is_active:
-                exchange.emit('pause', paused)
+        SpdySession._handle_pause(self, paused)
         # TODO: actually pause sending data from _output_buffer
     
     ### Timeouts
 
-    def _handle_read_timeout(self, entity, err):
-        """
-        Handle a read timeout on the exchange entity, of session if it's None.
-        """
-        if entity == self: # session level read timeout
-            self._handle_error(
-                error.ReadTimeoutError('No frame received for %d seconds.' 
-                    % self.client._read_timeout),
-                GoawayReasons.OK)
-        else: # a SpdyClientExchange read timeout
-            self._handle_error(err, StatusCodes.CANCEL, entity.stream_id)
-        
     def _set_read_timeout(self, entity, kind):
         """
         Set the read timeout associated to entity.
         """
-        if self.client._read_timeout and entity._read_timeout_ev is None:
+        if self._read_timeout and entity._read_timeout_ev is None:
             entity._read_timeout_ev = self.client._loop.schedule(
-                self.client.read_timeout, 
-                self._handle_read_timeout, 
-                entity, 
-                error.ReadTimeoutError(kind))
+                self._read_timeout, 
+                self._handle_error, 
+                error.ReadTimeoutError(kind),
+                StatusCodes.CANCEL,
+                entity.stream_id)
 
     def _clear_read_timeout(self, entity):
         """
@@ -518,7 +363,99 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
     ### Frame handling methods called by common.SpdyMessageHandler
     
     def _handle_frame(self, frame):
-        self._clear_read_timeout(self)
+        SpdySession._handle_frame(self, frame)
+        
+        if frame.type == FrameTypes.DATA:
+            exchange = self._exchange_or_die(frame.stream_id)
+            if exchange._req_state != ExchangeStates.STARTED:
+                """
+                If an endpoint receives a data frame after the stream is 
+                half-closed from the sender (e.g. the endpoint has already 
+                received a prior frame for the stream with the FIN flag set), 
+                it MUST send a RST_STREAM to the sender with the status
+                STREAM_ALREADY_CLOSED.
+                """
+                # NOTE: exchange._req_state can never be ExchangeStates.WAITING
+                # on the server side because a received SYN_STREAM implies
+                # that a request has started
+                self._handle_error(error.ProtocolError(
+                    'DATA frame received on closed stream.'),
+                    StatusCodes.STREAM_ALREADY_CLOSED, frame.stream_id)
+            else:
+                exchange.emit('request_body', frame.data)
+                if frame.flags == Flags.FLAG_FIN:
+                    exchange._req_state = ExchangeStates.DONE
+                    exchange.emit('request_done')
+            
+        elif frame.type == FrameTypes.SYN_STREAM:
+            if self._sent_goaway:
+                """
+                After sending a GOAWAY message, the sender must ignore all 
+                SYN_STREAM frames for new streams.
+                """
+                self.emit('error', error.ProtocolError(
+                    'Server received SYN_STREAM after sending GOAWAY.'))
+            elif self._valid_new_stream_id(frame.stream_id):
+                exchange = self._init_exchg(frame)
+                err = self._header_error(frame.hdr_tuples, request_hdrs)
+                if err:
+                    """
+                    If a client sends a SYN_STREAM without all of the method, 
+                    host, path, scheme, and version headers, the server MUST 
+                    reply with a HTTP 400 Bad Request reply.
+                    """
+                    self.server.emit('exchange', exchange)
+                    exchange.emit('error', err)
+                    exchange.response_start(None, "400 Bad Request", done=True)
+                    # TODO: exchange._req_state = ExchangeStates.DONE ?
+                else:
+                    self.server.emit('exchange', exchange)
+                    exchange.emit('request_start', hdr_dict(frame.hdr_tuples))
+                    if frame.flags == Flags.FLAG_FIN:
+                        exchange._req_state = ExchangeStates.DONE
+                        exchange.emit('request_done')
+                    elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
+                        exchange.emit('error', error.ProtocolError(
+                            'Client set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
+                    
+        elif frame.type == FrameTypes.HEADERS:
+            # TODO: "If the server sends a HEADER frame containing duplicate headers with a previous HEADERS frame for the same stream, the client must issue a stream error (Section 2.4.2) with error code PROTOCOL ERROR."
+            # TODO: "If the server sends a HEADERS frame after sending a data frame for the same stream, the client MAY ignore the HEADERS frame. Ignoring the HEADERS frame after a data frame prevents handling of HTTP's trailing headers."
+            exchange = self._exchange_or_die(frame.stream_id)
+            if exchange._req_state != ExchangeStates.STARTED:
+                # See handling for FrameTypes.DATA
+                self._handle_error(error.ProtocolError(
+                    'HEADERS frame received on closed stream.'),
+                    StatusCodes.STREAM_ALREADY_CLOSED, frame.stream_id)
+            else:
+                exchange.emit('request_headers', hdr_dict(frame.hdr_tuples))
+                if frame.flags == Flags.FLAG_FIN:
+                    exchange._req_state = ExchangeStates.DONE
+                    exchange.emit('request_done')
+                    
+        elif frame.type == FrameTypes.RST_STREAM:
+            """
+            After receiving a RST_STREAM on a stream, the recipient must not 
+            send additional frames for that stream, and the stream moves into 
+            the closed state.
+            """
+            try:
+                exchange = self.exchanges[frame.stream_id]
+                self._close_exchg(exchange)
+                exchange.emit('error', error.RstStreamError(
+                    StatusCodes.str[frame.status]))
+            else:
+                self.emit('error', error.ProtocolError(
+                    'Server received RST_STREAM for unknown stream with ID %d' %
+                    frame.stream_id))
+                # FIXME: should the session be terminated in this case?
+        
+        elif frame.type == FrameTypes.SYN_REPLY:
+            # clients should never be sending SYN_REPLY
+            self.emit('error', error.ProtocolError(
+                'Server received SYN_REPLY from client with stream ID %d.' %
+                frame.stream_id))
+        
     
     #def handle_syn(self):
         # validate stream_id, associated_stream_id
@@ -539,18 +476,9 @@ class SpdyClientSession(SpdyMessageHandler, EventEmitter):
         # call _input_body
         # raise errors to exchange instance
 
-    #handle_ping(session):
-        # validate ping ID
-        # send ping reply
-        # update last_ping_id
-        
-        self._set_read_timeout(self)
         
     
-    
-
-
-
+            
 
     ### Input-related methods called by common.SpdyMessageHandler
 

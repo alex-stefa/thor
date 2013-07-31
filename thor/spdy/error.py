@@ -29,9 +29,6 @@ THE SOFTWARE.
 
 class SpdyError(Exception):
     desc = "Unknown Error"
-    server_status = None # status this produces when it occurs in a server
-    server_recoverable = False # whether a server can recover the connection
-    client_recoverable = False # whether a client can recover the connection
 
     def __init__(self, detail=None):
         Exception.__init__(self)
@@ -44,82 +41,12 @@ class SpdyError(Exception):
         return "<%s at %#x>" % (", ".join(status), id(self))
         
     def __str__(self):
-        return '[%s] %s%s %s' % (
+        return '[%s] %s%s' % (
             self.__class__.__name__, 
             self.desc,
-            (': %s' % self.detail) if self.detail else '',
-            ' '.join(self.server_status) if self.server_status else '')
+            (': %s' % self.detail) if self.detail else '')
 
-# General parsing errors
-
-class ChunkError(SpdyError):
-    desc = "Chunked encoding error"
-    
-    
-class DuplicateCLError(SpdyError):
-    desc = "Duplicate Content-Length header"
-    server_status = ("400", "Bad Request")
-
-class MalformedCLError(SpdyError):
-    desc = "Malformed Content-Length header"
-    server_status = ("400", "Bad Request")
-
-class BodyForbiddenError(SpdyError):
-    desc = "This message does not allow a body",
-
-class HttpVersionError(SpdyError):
-    desc = "Unrecognised HTTP version"
-    server_status = ("505", "HTTP Version Not Supported")
-
-class TransferCodeError(SpdyError):
-    desc = "Unknown request transfer coding"
-    server_status = ("501", "Not Implemented")
-
-class HeaderSpaceError(SpdyError):
-    desc = "Whitespace at the end of a header field-name"
-    server_status = ("400", "Bad Request")
-    
-class TopLineSpaceError(SpdyError):
-    desc = "Whitespace after top line, before first header"
-    server_status = ("400", "Bad Request")
-
-class TooManyMsgsError(SpdyError):
-    desc = "Too many messages to parse"
-    server_status = ("400", "Bad Request")
-
-# client-specific errors
-
-#class UrlError(SpdyError):
-#    desc = "Unsupported or invalid URI"
-#    server_status = ("400", "Bad Request")
-#    client_recoverable = True
-
-class LengthRequiredError(SpdyError):
-    desc = "Content-Length required"
-    server_status = ("411", "Length Required")
-    client_recoverable = True
-
-#class ConnectError(SpdyError):
-#    desc = "Connection error"
-#    server_status = ("504", "Gateway Timeout")
-
-    
-# server-specific errors
-
-class HostRequiredError(SpdyError):
-    desc = "Host header required"
-    server_recoverable = True
-
-
-
-
-
-
-
-
-
-
-# timeout errors
+# Timeout errors
 
 class ReadTimeoutError(SpdyError):
     desc = "Read Timeout"
@@ -140,16 +67,16 @@ class ConnectError(SpdyError):
 class UrlError(SpdyError):
     desc = "Unsupported or invalid URI"
     
-class ExchangeCancelledError(SpdyError):
-    desc = "Remote endpoint cancelled the stream"
-    
 class ExchangeStateError(SpdyError):
     desc = "Cannot perform operation"
+
+class RstStreamError(SpdyError):
+    desc = "Received RST_STREAM with status code"
 
 # SPDY session specific errors
 
 class FrameSizeError(SpdyError):
-    desc = "Invalid frame size received."
+    desc = "Invalid frame size received"
     
 class StreamIdError(SpdyError):
     desc = "Invalid stream ID for session"
@@ -157,3 +84,8 @@ class StreamIdError(SpdyError):
 class HeaderError(SpdyError):
     desc = "Invalid headers"
     
+class ProtocolError(SpdyError):
+    desc = "SPDY protocol error"
+    
+class PingError(SpdyError):
+    desc = "Invalid ping ID"
