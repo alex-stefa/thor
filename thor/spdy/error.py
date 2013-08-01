@@ -37,14 +37,10 @@ class SpdyError(Exception):
     def __repr__(self):
         status = [self.__class__.__module__ + "." + self.__class__.__name__]
         if self.detail:
-            status.append(self.detail)
+            status.append(self.desc + ": " + self.detail)
+        else:
+            status.append(self.desc)
         return "<%s at %#x>" % (", ".join(status), id(self))
-        
-    def __str__(self):
-        return '[%s] %s%s' % (
-            self.__class__.__name__, 
-            self.desc,
-            (': %s' % self.detail) if self.detail else '')
 
 # Timeout errors
 
@@ -71,13 +67,22 @@ class ExchangeStateError(SpdyError):
     desc = "Cannot perform operation"
 
 class RstStreamError(SpdyError):
-    desc = "Received RST_STREAM with status code"
+    desc = "Received RST_STREAM"
 
 # SPDY session specific errors
 
 class FrameSizeError(SpdyError):
     desc = "Invalid frame size received"
     
+class ParsingError(SpdyError):
+    desc = "Error parsing SPDY frame"
+    
+class SpdyVersionError(SpdyError):
+    desc = "Unsupported SPDY protocol"
+    
+class FlagError(SpdyError):
+    desc = "Invalid flag set for frame"
+
 class StreamIdError(SpdyError):
     desc = "Invalid stream ID for session"
 
@@ -89,3 +94,4 @@ class ProtocolError(SpdyError):
     
 class PingError(SpdyError):
     desc = "Invalid ping ID"
+    

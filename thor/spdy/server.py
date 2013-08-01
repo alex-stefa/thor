@@ -37,6 +37,7 @@ from thor.events import EventEmitter, on
 from thor.tcp import TcpServer
 from thor.spdy import error
 from thor.spdy.common import *
+from thor.spdy.frames import *
 
 res_remove_hdrs = invalid_hdrs + response_hdrs + response_pushed_hdrs
 
@@ -95,8 +96,8 @@ class SpdyServerExchange(SpdyExchange):
     A SPDY request-response exchange with support for server push streams.
 
     Event handlers that can be added:
-        request_start(hdr_dict)
-        request_headers(hdr_dict)
+        request_start(header_dict)
+        request_headers(header_dict)
         request_body(chunk)
         request_done()
         pause(paused)
@@ -178,9 +179,9 @@ class SpdyServerExchange(SpdyExchange):
         code will be used.
         """
         if self._res_state == ExchangeStates.WAITING:
-            self.session._close_exchg(self, StatusCodes.REFUSED_STREAM)
+            self.session._close_exchange(self, StatusCodes.REFUSED_STREAM)
         else:
-            self.session._close_exchg(self, StatusCodes.CANCEL)
+            self.session._close_exchange(self, StatusCodes.CANCEL)
         
 #-------------------------------------------------------------------------------
 
@@ -194,6 +195,11 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
         self._write_queue = [[] for x in Priority.range]
         self._write_pending = False
         self._output_paused = False
+        self.frame_handlers[FrameTypes.DATA].append(self._frame_data)
+        self.frame_handlers[FrameTypes.SYN_STREAM].append(self._frame_syn_stream)
+        self.frame_handlers[FrameTypes.SYN_REPLY].append(self._frame_syn_reply)
+        self.frame_handlers[FrameTypes.HEADERS].append(self._frame_headers)
+        self.frame_handlers[FrameTypes.RST_STREAM].append(self._frame_rst_stream)
         self._bind(tcp_conn)
             
     ### Exchange response methods 
@@ -255,7 +261,7 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
             return False
         elif exchange._res_state == ExchangeStates.DONE:
             exchange.emit('error', 
-                error.ExchangeStateError('Response already sent.'))
+                error.ExchangeStateError('Response already sent or exchange cancelled.'))
             return False
         return True
         
@@ -264,8 +270,9 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
             return
         res_hdrs = clean_headers(res_hdrs, res_remove_hdrs)
         # FIXME: is status necessary on pushed streams?
-        req_hdrs.append((':status', str(status) if status else ''))
-        req_hdrs.append((':version', 'HTTP/1.1'))
+        res_hdrs.append((':status', str(status) if status else ''))
+        res_hdrs.append((':version', 'HTTP/1.1'))
+        res_hdrs = collapse_dups(res_hdrs)
         fin_flag = Flags.FLAG_FIN if done else Flags.FLAG_NONE
         if exchange._pushed:
             req_hdrs.append((':scheme', scheme if scheme else ''))
@@ -292,7 +299,7 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
             
     def _res_headers(self, exchange, res_hdrs):
         if self._ensure_can_send(exchange):
-            res_hdrs = clean_headers(res_hdrs, res_remove_hdrs)
+            res_hdrs = collapse_dups(clean_headers(res_hdrs, res_remove_hdrs))
             self._queue_frame(
                 exchange.priority,
                 HeadersFrame(
@@ -319,7 +326,7 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
                     ''))
             exchange._res_state = ExchangeStates.DONE
 
-    ### Output-related method called by common.SpdyMessageHandler
+    ### Output-related method called by common.SpdySession
     
     def _has_write_data(self):
         if self._output_paused:
@@ -367,13 +374,11 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
         if not paused:
             self._schedule_write()
         
-    ### Frame input handler method called by common.SpdyMessageHandler
+    ### Frame input handler method called by frames.SpdySession._handle_frame
     
-    def _handle_frame(self, frame):
-        SpdySession._handle_frame(self, frame)
-        
-        if frame.type == FrameTypes.DATA:
-            exchange = self._exchange_or_die(frame.stream_id)
+    def _frame_data(self, frame):
+        exchange = self._exchange_or_die(frame.stream_id)
+        if exchange:
             if exchange._req_state != ExchangeStates.STARTED:
                 """
                 If an endpoint receives a data frame after the stream is 
@@ -394,82 +399,90 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
                     exchange._req_state = ExchangeStates.DONE
                     exchange.emit('request_done')
             
-        elif frame.type == FrameTypes.SYN_STREAM:
-            if self._sent_goaway:
+    def _frame_syn_stream(self, frame):
+        if self._sent_goaway:
+            """
+            After sending a GOAWAY message, the sender must ignore all 
+            SYN_STREAM frames for new streams.
+            """
+            self.emit('error', error.ProtocolError(
+                'Server received SYN_STREAM after sending GOAWAY.'))
+        elif self._valid_new_stream_id(frame.stream_id):
+            exchange = self._init_exchg(frame)
+            err = self._header_error(frame.hdr_tuples, request_hdrs)
+            if err:
                 """
-                After sending a GOAWAY message, the sender must ignore all 
-                SYN_STREAM frames for new streams.
+                If a client sends a SYN_STREAM without all of the method, 
+                host, path, scheme, and version headers, the server MUST 
+                reply with a HTTP 400 Bad Request reply.
                 """
-                self.emit('error', error.ProtocolError(
-                    'Server received SYN_STREAM after sending GOAWAY.'))
-            elif self._valid_new_stream_id(frame.stream_id):
-                exchange = self._init_exchg(frame)
-                err = self._header_error(frame.hdr_tuples, request_hdrs)
-                if err:
-                    """
-                    If a client sends a SYN_STREAM without all of the method, 
-                    host, path, scheme, and version headers, the server MUST 
-                    reply with a HTTP 400 Bad Request reply.
-                    """
-                    self.server.emit('exchange', exchange)
-                    exchange.emit('error', err)
-                    exchange.response_start(None, "400 Bad Request", done=True)
-                    # TODO: exchange._req_state = ExchangeStates.DONE ?
-                else:
-                    self.server.emit('exchange', exchange)
-                    exchange.emit('request_start', hdr_dict(frame.hdr_tuples))
-                    if frame.flags == Flags.FLAG_FIN:
-                        exchange._req_state = ExchangeStates.DONE
-                        exchange.emit('request_done')
-                    elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
-                        exchange.emit('error', error.ProtocolError(
-                            'Client set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
-                    
-        elif frame.type == FrameTypes.HEADERS:
-            # TODO: "If the server sends a HEADER frame containing duplicate headers with a previous HEADERS frame for the same stream, the client must issue a stream error (Section 2.4.2) with error code PROTOCOL ERROR."
-            # TODO: "If the server sends a HEADERS frame after sending a data frame for the same stream, the client MAY ignore the HEADERS frame. Ignoring the HEADERS frame after a data frame prevents handling of HTTP's trailing headers."
-            exchange = self._exchange_or_die(frame.stream_id)
+                self.server.emit('exchange', exchange)
+                exchange.emit('error', err)
+                exchange.response_start(None, "400 Bad Request", done=True)
+                # TODO: exchange._req_state = ExchangeStates.DONE ?
+            else:
+                self.server.emit('exchange', exchange)
+                exchange.emit('request_start', header_dict(frame.hdr_tuples))
+                if frame.flags == Flags.FLAG_FIN:
+                    exchange._req_state = ExchangeStates.DONE
+                    exchange.emit('request_done')
+                elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
+                    exchange.emit('error', error.ProtocolError(
+                        'Client set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
+    
+    def _frame_headers(self, frame):
+        # TODO: "If the server sends a HEADERS frame containing duplicate headers with a previous HEADERS frame for the same stream, the client must issue a stream error (Section 2.4.2) with error code PROTOCOL ERROR."
+        # TODO: "If the server sends a HEADERS frame after sending a data frame for the same stream, the client MAY ignore the HEADERS frame. Ignoring the HEADERS frame after a data frame prevents handling of HTTP's trailing headers."
+        exchange = self._exchange_or_die(frame.stream_id)
+        if exchange:
             if exchange._req_state != ExchangeStates.STARTED:
                 # See handling for FrameTypes.DATA
                 self._handle_error(error.ProtocolError(
                     'HEADERS frame received on closed stream.'),
                     StatusCodes.STREAM_ALREADY_CLOSED, frame.stream_id)
             else:
-                exchange.emit('request_headers', hdr_dict(frame.hdr_tuples))
+                exchange.emit('request_headers', header_dict(frame.hdr_tuples))
                 if frame.flags == Flags.FLAG_FIN:
                     exchange._req_state = ExchangeStates.DONE
                     exchange.emit('request_done')
                     
-        elif frame.type == FrameTypes.RST_STREAM:
+    def _frame_rst_stream(self, frame):
+        """
+        After receiving a RST_STREAM on a stream, the recipient must not 
+        send additional frames for that stream, and the stream moves into 
+        the closed state.
+        """
+        try:
+            exchange = self.exchanges[frame.stream_id]
+            self._close_exchange(exchange)
             """
-            After receiving a RST_STREAM on a stream, the recipient must not 
-            send additional frames for that stream, and the stream moves into 
-            the closed state.
+            To cancel all server push streams related to a request, the client 
+            may issue a stream error (Section 2.4.2) with error code CANCEL on
+            the associated-stream-id. By cancelling that stream, the server MUST
+            immediately stop sending frames for any streams with 
+            in-association-to for the original stream.
             """
-            try:
-                exchange = self.exchanges[frame.stream_id]
-                self._close_exchg(exchange)
-                exchange.emit('error', error.RstStreamError(
-                    StatusCodes.str[frame.status]))
-            else:
-                self.emit('error', error.ProtocolError(
-                    'Server received RST_STREAM for unknown stream with ID %d' %
-                    frame.stream_id))
-                # FIXME: should the session be terminated in this case?
-        
-        elif frame.type == FrameTypes.SYN_REPLY:
-            # clients should never be sending SYN_REPLY
+            # FIXME: looping like this can take too much time
+            if frame.status = StatusCodes.CANCEL:
+                for exchange in self.exchanges.values():
+                    if (exchange._pushed and 
+                        exchange._stream_assoc_id == frame.stream_id):
+                        self._close_exchange(exchange)
+            exchange.emit('error', error.RstStreamError(
+                'Status code %s' % StatusCodes.str[frame.status]))
+        else:
             self.emit('error', error.ProtocolError(
-                'Server received SYN_REPLY from client with stream ID %d.' %
+                'Server received RST_STREAM for unknown stream with ID %d' %
                 frame.stream_id))
+            # FIXME: should the session be terminated in this case?
+        
+    def _frame_syn_reply(self, frame):
+        # clients should never be sending SYN_REPLY
+        self.emit('error', error.ProtocolError(
+            'Server received SYN_REPLY from client with stream ID %d.' %
+            frame.stream_id))
                 
 #-------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    logging.basicConfig()
-    log = logging.getLogger('server')
-    log.setLevel(logging.INFO)
-    log.info("PID: %s\n" % os.getpid())
-    h, p = '127.0.0.1', int(sys.argv[1])
-    server = SpdyServer(h, p, test_handler, log)
-    push_tcp.run()
+    pass

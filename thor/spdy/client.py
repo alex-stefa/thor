@@ -37,6 +37,7 @@ from thor.events import EventEmitter, on
 from thor.tcp import TcpClient
 from thor.spdy import error
 from thor.spdy.common import *
+from thor.spdy.frames import *
     
 req_remove_hdrs = invalid_hdrs + request_hdrs
 
@@ -124,8 +125,8 @@ class SpdyClientExchange(SpdyExchange):
     A SPDY request-response exchange with support for server push streams
 
     Event handlers that can be added:
-        response_start(hdr_dict)
-        response_headers(hdr_dict)
+        response_start(header_dict)
+        response_headers(header_dict)
         response_body(chunk)
         response_done()
         pushed_response(exchage) -- new server pushed response associated with  
@@ -194,7 +195,11 @@ class SpdyClientExchange(SpdyExchange):
         Sends a RST_STREAM frame with CANCEL status code to indicate that
         the SPDY stream associated to this exchange should be cancelled.
         """
-        self.session._close_exchg(self, StatusCodes.CANCEL)
+        self.session._close_exchange(self, StatusCodes.CANCEL)
+        for exchange in self.session.exchanges.values():
+            if (exchange._pushed and 
+                exchange._stream_assoc_id == self.stream_id):
+                    self.session._close_exchange(exchange)
 
 #-------------------------------------------------------------------------------
 
@@ -208,6 +213,11 @@ class SpdyClientSession(SpdySession):
         self.origin = origin # (host, port)
         self._read_timeout = client._read_timeout
         self._output_buffer = list()
+        self.frame_handlers[FrameTypes.DATA].append(self._frame_data)
+        self.frame_handlers[FrameTypes.SYN_STREAM].append(self._frame_syn_stream)
+        self.frame_handlers[FrameTypes.SYN_REPLY].append(self._frame_syn_reply)
+        self.frame_handlers[FrameTypes.HEADERS].append(self._frame_headers)
+        self.frame_handlers[FrameTypes.RST_STREAM].append(self._frame_rst_stream)
 
     ### "Public" methods
     
@@ -216,6 +226,19 @@ class SpdyClientSession(SpdySession):
         self.client._remove_session(self)
 
     ### Exchange request methods
+    
+    def _init_pushed_exchg(self, syn_stream_frame):
+        exchg = SpdyClientExchange(self.client)
+        exchg.session = self
+        exchg.stream_id = syn_stream_frame.stream_id
+        self._highest_accepted_stream_id = syn_stream_frame.stream_id
+        exchg.priority = syn_stream_frame.priority
+        exchg._stream_assoc_id = syn_stream_frame.stream_assoc_id
+        exchg._pushed = True
+        exchg._req_state = ExchangeStates.DONE
+        exchg._res_state = ExchangeStates.WAITING
+        self.exchanges[exchg.stream_id] = exchg
+        return exchg
                 
     def _ensure_can_init(self, exchange):
         if exchage._pushed:
@@ -243,7 +266,7 @@ class SpdyClientSession(SpdySession):
             return False
         elif exchange._req_state == ExchangeStates.DONE:
             exchange.emit('error', 
-                error.ExchangeStateError('Request already sent.'))
+                error.ExchangeStateError('Request already sent or exchage cancelled.'))
             return False
         return True
     
@@ -256,6 +279,7 @@ class SpdyClientSession(SpdySession):
         req_hdrs.append((':scheme', scheme if scheme else ''))
         req_hdrs.append((':host', host if host else ''))
         req_hdrs.append((':path', path if path else ''))
+        req_hdrs = collapse_dups(req_hdrs)
         exchange.stream_id = self._next_created_stream_id()
         exchange.session = self
         self.exchanges[exchange.stream_id] = exchange
@@ -285,7 +309,7 @@ class SpdyClientSession(SpdySession):
     
     def _req_headers(self, exchange, req_hdrs):
         if self._ensure_can_send(exchange):
-            req_hdrs = clean_headers(req_hdrs, req_remove_hdrs)
+            req_hdrs = collapse_dups(clean_headers(req_hdrs, req_remove_hdrs))
             self._queue_frame(
                 exchage.priority,
                 HeadersFrame(
@@ -313,7 +337,7 @@ class SpdyClientSession(SpdySession):
             exchange._req_state = ExchangeStates.DONE
             self._set_read_timeout(exchange, 'start')
                     
-    ### Output-related methods called by common.SpdyMessageHandler
+    ### Output-related methods called by common.SpdySession
 
     def _queue_frame(self, priority, frame):
         self._clear_idle_timeout()
@@ -339,6 +363,10 @@ class SpdyClientSession(SpdySession):
         # TODO: actually pause sending data from _output_buffer
     
     ### Timeouts
+    
+    def _close_exchange(self, exchange, status=None):
+        self._clear_read_timeout(exchage)
+        SpdySession._close_exchange(self, exchage, status)
 
     def _set_read_timeout(self, entity, kind):
         """
@@ -360,14 +388,12 @@ class SpdyClientSession(SpdySession):
             entity._read_timeout_ev.delete()
             entity._read_timeout_ev = None
     
-    ### Frame handling methods called by common.SpdyMessageHandler
+    ### Frame input handler method called by frames.SpdySession._handle_frame
     
-    def _handle_frame(self, frame):
-        SpdySession._handle_frame(self, frame)
-        
-        if frame.type == FrameTypes.DATA:
-            exchange = self._exchange_or_die(frame.stream_id)
-            if exchange._req_state != ExchangeStates.STARTED:
+    def _frame_data(self, frame):
+        exchange = self._exchange_or_die(frame.stream_id)
+        if exchange:
+            if exchange._res_state == ExchangeStates.DONE:
                 """
                 If an endpoint receives a data frame after the stream is 
                 half-closed from the sender (e.g. the endpoint has already 
@@ -375,192 +401,158 @@ class SpdyClientSession(SpdySession):
                 it MUST send a RST_STREAM to the sender with the status
                 STREAM_ALREADY_CLOSED.
                 """
-                # NOTE: exchange._req_state can never be ExchangeStates.WAITING
-                # on the server side because a received SYN_STREAM implies
-                # that a request has started
                 self._handle_error(error.ProtocolError(
                     'DATA frame received on closed stream.'),
                     StatusCodes.STREAM_ALREADY_CLOSED, frame.stream_id)
+            elif exchange._res_state == ExchangeStates.WAITING:
+                """
+                If the endpoint which created the stream receives a data frame 
+                before receiving a SYN_REPLY on that stream, it is a protocol 
+                error, and the recipient MUST issue a stream error with the 
+                status code PROTOCOL_ERROR for the stream-id.
+                """
+                self._handle_error(error.ProtocolError(
+                    'DATA frame received before SYN_REPLY.'),
+                    StatusCodes.PROTOCOL_ERROR, frame.stream_id)
             else:
-                exchange.emit('request_body', frame.data)
+                exchange.emit('response_body', frame.data)
+                self._clear_read_timeout(exchange)
                 if frame.flags == Flags.FLAG_FIN:
-                    exchange._req_state = ExchangeStates.DONE
-                    exchange.emit('request_done')
-            
-        elif frame.type == FrameTypes.SYN_STREAM:
-            if self._sent_goaway:
-                """
-                After sending a GOAWAY message, the sender must ignore all 
-                SYN_STREAM frames for new streams.
-                """
-                self.emit('error', error.ProtocolError(
-                    'Server received SYN_STREAM after sending GOAWAY.'))
-            elif self._valid_new_stream_id(frame.stream_id):
-                exchange = self._init_exchg(frame)
-                err = self._header_error(frame.hdr_tuples, request_hdrs)
-                if err:
-                    """
-                    If a client sends a SYN_STREAM without all of the method, 
-                    host, path, scheme, and version headers, the server MUST 
-                    reply with a HTTP 400 Bad Request reply.
-                    """
-                    self.server.emit('exchange', exchange)
-                    exchange.emit('error', err)
-                    exchange.response_start(None, "400 Bad Request", done=True)
-                    # TODO: exchange._req_state = ExchangeStates.DONE ?
+                    exchange._res_state = ExchangeStates.DONE
+                    exchange.emit('response_done')
                 else:
-                    self.server.emit('exchange', exchange)
-                    exchange.emit('request_start', hdr_dict(frame.hdr_tuples))
-                    if frame.flags == Flags.FLAG_FIN:
-                        exchange._req_state = ExchangeStates.DONE
-                        exchange.emit('request_done')
-                    elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
-                        exchange.emit('error', error.ProtocolError(
-                            'Client set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
-                    
-        elif frame.type == FrameTypes.HEADERS:
-            # TODO: "If the server sends a HEADER frame containing duplicate headers with a previous HEADERS frame for the same stream, the client must issue a stream error (Section 2.4.2) with error code PROTOCOL ERROR."
-            # TODO: "If the server sends a HEADERS frame after sending a data frame for the same stream, the client MAY ignore the HEADERS frame. Ignoring the HEADERS frame after a data frame prevents handling of HTTP's trailing headers."
-            exchange = self._exchange_or_die(frame.stream_id)
-            if exchange._req_state != ExchangeStates.STARTED:
+                    self._set_read_timeout(exchange, 'body')
+            
+    def _frame_syn_stream(self, frame):
+        if self._sent_goaway:
+            """
+            After sending a GOAWAY message, the sender must ignore all 
+            SYN_STREAM frames for new streams.
+            """
+            self.emit('error', error.ProtocolError(
+                'Client received SYN_STREAM after sending GOAWAY.'))
+        elif self._valid_new_stream_id(frame.stream_id):
+            try:
+                assoc_exchg = self.exchanges[frame.stream_assoc_id]
+            except:
+                assoc_exchg = None
+                self._handle_error(error.ProtocolError(
+                    ('Client received pushed SYN_STREAM associated '
+                     'to unknown stream ID %d.') % frame.stream_assoc_id),
+                    StatusCodes.INVALID_STREAM, frame.stream_id)
+            if assoc_exchg:
+                if assoc_exchg._res_state == ExchangeStates.DONE:
+                    self._handle_error(error.ProtocolError(
+                        ('Client received pushed SYN_STREAM associated '
+                         'to closed stream ID %d.') % frame.stream_assoc_id),
+                        StatusCodes.INVALID_STREAM, frame.stream_id)
+                else:
+                    err = self._header_error(frame.hdr_tuples, response_pushed_hdrs)
+                    if err:
+                        """
+                        When a client receives a SYN_STREAM from the server 
+                        without the ':host', ':scheme', and ':path' headers i
+                        n the Name/Value section, it MUST reply with a 
+                        RST_STREAM with error code HTTP_PROTOCOL_ERROR.
+                        """
+                        # NOTE: there is no HTTP_PROTOCOL_ERROR in spdy/3 spec
+                        self._handle_error(err, 
+                            StatusCodes.PROTOCOL_ERROR, frame.stream_id)
+                    else:
+                        exchage = self._init_pushed_exchg(frame)
+                        assoc_exchg.emit('pushed_response', exchage)
+                        exchage.emit('response_start', header_dict(frame.hdr_tuples))
+                        if frame.flags == Flags.FLAG_FIN:
+                            exchange._res_state = ExchangeStates.DONE
+                            exchange.emit('response_done')
+                        elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
+                            self._set_read_timeout(exchange, 'body')
+                        else:
+                            exchange.emit('error', error.ProtocolError(
+                                'Server did not set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
+    
+    def _frame_headers(self, frame):
+        # TODO: "If the server sends a HEADERS frame containing duplicate headers with a previous HEADERS frame for the same stream, the client must issue a stream error (Section 2.4.2) with error code PROTOCOL ERROR."
+        # TODO: "If the server sends a HEADERS frame after sending a data frame for the same stream, the client MAY ignore the HEADERS frame. Ignoring the HEADERS frame after a data frame prevents handling of HTTP's trailing headers."
+        exchange = self._exchange_or_die(frame.stream_id)
+        if exchange:
+            if exchange._res_state == ExchangeStates.DONE:
                 # See handling for FrameTypes.DATA
                 self._handle_error(error.ProtocolError(
                     'HEADERS frame received on closed stream.'),
                     StatusCodes.STREAM_ALREADY_CLOSED, frame.stream_id)
+            elif exchange._res_state == ExchangeStates.WAITING:
+                # See handling for FrameTypes.DATA
+                self._handle_error(error.ProtocolError(
+                    'HEADERS frame received before SYN_REPLY.'),
+                    StatusCodes.PROTOCOL_ERROR, frame.stream_id)
             else:
-                exchange.emit('request_headers', hdr_dict(frame.hdr_tuples))
+                exchange.emit('response_headers', header_dict(frame.hdr_tuples))
+                self._clear_read_timeout(exchange)
                 if frame.flags == Flags.FLAG_FIN:
-                    exchange._req_state = ExchangeStates.DONE
-                    exchange.emit('request_done')
+                    exchange._res_state = ExchangeStates.DONE
+                    exchange.emit('response_done')
+                else:
+                    self._set_read_timeout(exchange, 'body')
                     
-        elif frame.type == FrameTypes.RST_STREAM:
-            """
-            After receiving a RST_STREAM on a stream, the recipient must not 
-            send additional frames for that stream, and the stream moves into 
-            the closed state.
-            """
-            try:
-                exchange = self.exchanges[frame.stream_id]
-                self._close_exchg(exchange)
-                exchange.emit('error', error.RstStreamError(
-                    StatusCodes.str[frame.status]))
-            else:
-                self.emit('error', error.ProtocolError(
-                    'Server received RST_STREAM for unknown stream with ID %d' %
-                    frame.stream_id))
-                # FIXME: should the session be terminated in this case?
-        
-        elif frame.type == FrameTypes.SYN_REPLY:
-            # clients should never be sending SYN_REPLY
-            self.emit('error', error.ProtocolError(
-                'Server received SYN_REPLY from client with stream ID %d.' %
-                frame.stream_id))
-        
-    
-    #def handle_syn(self):
-        # validate stream_id, associated_stream_id
-        # validate hdrs
-        # update highest_stream_id
-        # send SYN_REPLY
-        # call _input_start
-        # raise errors to exchange instance
-        
-    #handle_reply(session, stream_id, hdrs):
-        # validate stream_id, response hdrs
-        # call _input_start
-        # raise errors to exchange instance
-        
-    #handle_data(session, stream_id, flags, chunk)
-        # validate stream_id
-        # close stream if FLAG_FIN
-        # call _input_body
-        # raise errors to exchange instance
-
-        
-    
-            
-
-    ### Input-related methods called by common.SpdyMessageHandler
-
-    def _input_start(self, stream_id, stream_assoc_id, hdr_tuples, priority):
-        "Indicate the beginning of a response or a new pushed stream."
-        # TODO: validate host for same-origin policy
-        if stream_assoc_id:
-            # create new server push stream
-            pushed_exchg = SpdyClientExchange(self.client)
-            pushed_exchg.session = self
-            pushed_exchg.stream_id = stream_id
-            pushed_exchg.priority = priority
-            pushed_exchg._pushed = True
-            pushed_exchg._stream_assoc_id = stream_assoc_id
-            pushed_exchg._exchg_state = ExchangeStates.REQ_DONE
-            pushed_exchg._stream_state = StreamStates.LOCAL_CLOSED
-            self.exchanges[stream_id] = pushed_exchg
-            exchange = self.exchanges[stream_assoc_id]
+    def _frame_rst_stream(self, frame):
+        """
+        After receiving a RST_STREAM on a stream, the recipient must not 
+        send additional frames for that stream, and the stream moves into 
+        the closed state.
+        """
+        try:
+            exchange = self.exchanges[frame.stream_id]
+            self._close_exchange(exchange)
+            exchange.emit('error', error.RstStreamError(
+                'Status code %s' % StatusCodes.str[frame.status]))
         else:
-            # response for stream request
-            exchange = self.exchanges[stream_id]
-            exchange._exchg_state = ExchangeStates.RES_STARTED
-        self._clear_read_timeout(exchange)
-        self._set_read_timeout(exchange, 'body')
-        exchange.emit('response_start', stream_id, header_dict(hdr_tuples)) 
-    
-    def _input_body(self, stream_id, chunk):
-        "Process a response body chunk from the wire."
-        exchange = self.exchanges[stream_id]
-        if exchange._pushed:
-            exchange = self.exchanges[exchange._stream_assoc_id]
-        self._clear_read_timeout(exchange)
-        self._set_read_timeout(exchange, 'body')
-        exchange.emit('response_body', stream_id, chunk)
-    
-    def _input_headers(self, stream_id, hdr_tuples):
-        "Process additional response headers."
-        exchange = self.exchanges[stream_id]
-        if exchange._pushed:
-            exchange = self.exchanges[exchange._stream_assoc_id]
-        self._clear_read_timeout(exchange)
-        self._set_read_timeout(exchange, 'body')
-        exchange.emit('response_headers', stream_id, header_dict(hrd_tuples))
+            self.emit('error', error.ProtocolError(
+                'Server received RST_STREAM for unknown stream with ID %d' %
+                frame.stream_id))
+            # FIXME: should the session be terminated in this case?
         
-    def _input_end(self, stream_id):
-        "Indicate that the response body is complete."
-        exchange = self.exchanges[stream_id]
-        exchange._exchg_state = ExchangeStates.RES_DONE
-        exchange._stream_state = StreamStates.CLOSED
-        if exchange._pushed:
-            exchange = self.exchanges[exchange._stream_assoc_id]
-        self._clear_read_timeout(exchange)
-        if exchange._exchg_state != ExchangeStates.RES_DONE
-            self._set_read_timeout(exchange, 'body')
-        exchange.emit('response_done', stream_id)
-        # TODO: delete stream if output side is half-closed.
-
- 
- 
-        
+    def _frame_syn_reply(self, frame):
+        exchange = self._exchange_or_die(frame.stream_id)
+        if exchange:
+            if exchage._pushed:
+                self._handle_error(error.ProtocolError(
+                    'SYN_REPLY frame received on server pushed stream.'),
+                    StatusCodes.PROTOCOL_ERROR, frame.stream_id)
+            elif exchange._res_state == ExchangeStates.DONE:
+                # See handling for FrameTypes.DATA
+                self._handle_error(error.ProtocolError(
+                    'SYN_REPLY frame received on closed stream.'),
+                    StatusCodes.STREAM_ALREADY_CLOSED, frame.stream_id)
+            elif exchange._res_state == ExchangeStates.STARTED:
+                """
+                If an endpoint receives multiple SYN_REPLY frames for the same 
+                active stream ID, it MUST issue a stream error with the error 
+                code STREAM_IN_USE.
+                """
+                self._handle_error(error.ProtocolError(
+                    'Duplicate SYN_REPLY frame received.'),
+                    StatusCodes.STREAM_IN_USE, frame.stream_id)
+            else:
+                err = self._header_error(frame.hdr_tuples, response_hdrs)
+                if err:
+                    """
+                    If a client receives a SYN_REPLY without a status or 
+                    without a version header, the client must reply with a 
+                    RST_STREAM frame indicating a PROTOCOL ERROR.
+                    """
+                    self._handle_error(err, 
+                        StatusCodes.PROTOCOL_ERROR, frame.stream_id)
+                else:
+                    exchage.emit('response_start', header_dict(frame.hdr_tuples))
+                    self._clear_read_timeout(exchange)
+                    if frame.flags == Flags.FLAG_FIN:
+                        exchange._res_state = ExchangeStates.DONE
+                        exchange.emit('response_done')
+                    else:
+                        self._set_read_timeout(exchange, 'body')
         
 #-------------------------------------------------------------------------------
-        
-def test_client(request_uri):
-    "A simple demonstration of a client."
-    def printer(version, status, phrase, headers, res_pause):
-        "Print the response headers."
-        print "HTTP/%s" % version, status, phrase
-        print "\n".join(["%s:%s" % header for header in headers])
-        print
-        def body(chunk):
-            print chunk
-        def done(err):
-            if err:
-                print "*** ERROR: %s (%s)" % (err['desc'], err['detail'])
-            push_tcp.stop()
-        return body, done
-    c = SpdyClient()
-    req_body_write, req_done = c.req_start("GET", request_uri, [], printer, dummy)
-    req_done(None)
-    push_tcp.run()
             
 if __name__ == "__main__":
-    import sys
-    test_client(sys.argv[1])
+    pass
