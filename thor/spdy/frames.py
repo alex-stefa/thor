@@ -288,20 +288,20 @@ FrameTypes = enum(
 Flags = enum(
     FLAG_NONE = 0x00, 
     FLAG_FIN = 0x01, 
-    FLAG_UNIDIRECTIONAL = 0x02
+    FLAG_UNIDIRECTIONAL = 0x02,
     FLAG_SETTINGS_CLEAR_SETTINGS = 0x01) # FIXME: Flags.str[..] won't work here
     
 ValidFlags = {
-    FrameTypes.DATA: [Flags.NONE, Flags.FIN],
-    FrameTypes.SYN_STREAM: [Flags.NONE, Flags.FIN, Flags.FLAG_UNIDIRECTIONAL],
-    FrameTypes.SYN_REPLY: [Flags.NONE, Flags.FIN],
-    FrameTypes.RST_STREAM: [Flags.NONE],
-    FrameTypes.SETTINGS: [Flags.NONE, FLAG_SETTINGS_CLEAR_SETTINGS],
-    FrameTypes.PING: [Flags.NONE],
-    FrameTypes.GOAWAY: [Flags.NONE],
-    FrameTypes.HEADERS: [Flags.NONE, Flags.FLAG_FIN],
-    FrameTypes.WINDOW_UPDATE: [Flags.NONE],
-    FrameTypes.CREDENTIAL: [Flags.NONE]} # no flags mentioned in spdy/3 spec
+    FrameTypes.DATA: [Flags.FLAG_NONE, Flags.FLAG_FIN],
+    FrameTypes.SYN_STREAM: [Flags.FLAG_NONE, Flags.FLAG_FIN, Flags.FLAG_UNIDIRECTIONAL],
+    FrameTypes.SYN_REPLY: [Flags.FLAG_NONE, Flags.FLAG_FIN],
+    FrameTypes.RST_STREAM: [Flags.FLAG_NONE],
+    FrameTypes.SETTINGS: [Flags.FLAG_NONE, Flags.FLAG_SETTINGS_CLEAR_SETTINGS],
+    FrameTypes.PING: [Flags.FLAG_NONE],
+    FrameTypes.GOAWAY: [Flags.FLAG_NONE],
+    FrameTypes.HEADERS: [Flags.FLAG_NONE, Flags.FLAG_FIN],
+    FrameTypes.WINDOW_UPDATE: [Flags.FLAG_NONE],
+    FrameTypes.CREDENTIAL: [Flags.FLAG_NONE]} # no flags mentioned in spdy/3 spec
 
 MinFrameLen = {
     FrameTypes.DATA: 0,
@@ -887,12 +887,12 @@ class SpdyMessageHandler(object):
                 id = (d1 << 16) + d2
                 if flags not in SettingsFlags.values:
                     self._handle_error(error.ParsingError(
-                        'Received unknown settings flags %d.' % flags)), 
+                        'Received unknown settings flags %d.' % flags), 
                         GoawayReasons.PROTOCOL_ERROR, None, True)
                     return None
                 if id not in SettingsIDs.values:
                     self._handle_error(error.ParsingError(
-                        'Received unknown settings ID %d.' % id)), 
+                        'Received unknown settings ID %d.' % id), 
                         GoawayReasons.PROTOCOL_ERROR, None, True)
                     return None
                 entries.append((flags, id, value))
@@ -937,7 +937,7 @@ class SpdyMessageHandler(object):
                     StatusCodes.FRAME_TOO_LARGE, stream_id, True)
                 self._handle_error(None, 
                     GoawayReasons.INTERNAL_ERROR, None, True)
-            else
+            else:
                 self._handle_error(err,
                     GoawayReasons.INTERNAL_ERROR, None, True)
             return False
@@ -950,7 +950,7 @@ class SpdyMessageHandler(object):
                 'Frame length %d is too small for a %s frame' %
                 (self._input_frame_len, FrameTypes.str[self._input_frame_type])),
                 GoawayReasons.INTERNAL_ERROR, None, True)
-                return False
+            return False
         return True
     
     def _valid_frame_version(self, data):

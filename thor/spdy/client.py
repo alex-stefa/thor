@@ -43,83 +43,6 @@ req_remove_hdrs = invalid_hdrs + request_hdrs
 
 #-------------------------------------------------------------------------------
 
-# TODO: figure out appropriate logging
-# TODO: proxy support
-# TODO: implement connect retry? 
-# TODO: spdy over tls (needs npn support)
-
-class SpdyClient(EventEmitter):
-    """
-    An asynchronous SPDY client.
-    """
-    def __init__(self, 
-            connect_timeout=None, 
-            read_timeout=None, 
-            idle_timeout=None, 
-            loop=None, 
-            spdy_session_class=SpdyClientSession, 
-            tcp_client_class=TcpClient):
-        EventEmitter.__init__(self)
-        self._connect_timeout = connect_timeout
-        self._read_timeout = read_timeout
-        self._idle_timeout = idle_timeout
-        self._sessions = dict()
-        self._loop = loop or thor.loop._loop
-        self._loop.on('stop', self.close)
-        self._spdy_session_class = spdy_session_class
-        self._tcp_client_class = tcp_client_class
-
-        # TODO:
-        self.proxy = None
-        self.use_tls = False
-
-    def session(self, origin):
-        """
-        Find an idle connection for (host, port), or create a new one.
-        """
-        host, port = origin # FIXME: add scheme?
-        try:
-            session = self._sessions[origin]
-        except KeyError:
-            session = self._spdy_session_class(self, origin)
-            tcp_client = self._tcp_client_class(self._loop)
-            tcp_client.on('connect', session._bind)
-            tcp_client.on('connect_error', session._handle_connect_error)
-            tcp_client.connect(host, port, self._connect_timeout)
-            self.sessions[origin] = session
-        return session
-        
-    def _remove_session(self, session):
-        """
-        Closes and removes session from dictionary.
-        """
-        try:
-            if self._sessions[session.origin] == session:
-                del self._sessions[session.origin]
-        except:
-            pass
-            
-    def shutdown(self):
-        """
-        Close all SPDY sessions.
-        """
-        for session in self._sessions.values():
-            try:
-                session._close()
-            except:
-                pass
-        self._sessions.clear()
-    
-    def exchange(self):
-        """
-        Return an unbounded client exchange. When a request is made on the 
-        exchange, it will be bound to a session corresponding to the 
-        host refered to in the request URL.
-        """
-        return SpdyClientExchange(self)
-        
-#-------------------------------------------------------------------------------
-
 class SpdyClientExchange(SpdyExchange):
     """
     A SPDY request-response exchange with support for server push streams
@@ -506,7 +429,7 @@ class SpdyClientSession(SpdySession):
             self._close_exchange(exchange)
             exchange.emit('error', error.RstStreamError(
                 'Status code %s' % StatusCodes.str[frame.status]))
-        else:
+        except:
             self.emit('error', error.ProtocolError(
                 'Server received RST_STREAM for unknown stream with ID %d' %
                 frame.stream_id))
@@ -553,6 +476,83 @@ class SpdyClientSession(SpdySession):
                         self._set_read_timeout(exchange, 'body')
         
 #-------------------------------------------------------------------------------
+
+# TODO: figure out appropriate logging
+# TODO: proxy support
+# TODO: implement connect retry? 
+# TODO: spdy over tls (needs npn support)
+
+class SpdyClient(EventEmitter):
+    """
+    An asynchronous SPDY client.
+    """
+    def __init__(self, 
+            connect_timeout=None, 
+            read_timeout=None, 
+            idle_timeout=None, 
+            loop=None, 
+            spdy_session_class=SpdyClientSession, 
+            tcp_client_class=TcpClient):
+        EventEmitter.__init__(self)
+        self._connect_timeout = connect_timeout
+        self._read_timeout = read_timeout
+        self._idle_timeout = idle_timeout
+        self._sessions = dict()
+        self._loop = loop or thor.loop._loop
+        self._loop.on('stop', self.close)
+        self._spdy_session_class = spdy_session_class
+        self._tcp_client_class = tcp_client_class
+
+        # TODO:
+        self.proxy = None
+        self.use_tls = False
+
+    def session(self, origin):
+        """
+        Find an idle connection for (host, port), or create a new one.
+        """
+        host, port = origin # FIXME: add scheme?
+        try:
+            session = self._sessions[origin]
+        except KeyError:
+            session = self._spdy_session_class(self, origin)
+            tcp_client = self._tcp_client_class(self._loop)
+            tcp_client.on('connect', session._bind)
+            tcp_client.on('connect_error', session._handle_connect_error)
+            tcp_client.connect(host, port, self._connect_timeout)
+            self.sessions[origin] = session
+        return session
+        
+    def _remove_session(self, session):
+        """
+        Closes and removes session from dictionary.
+        """
+        try:
+            if self._sessions[session.origin] == session:
+                del self._sessions[session.origin]
+        except:
+            pass
             
+    def shutdown(self):
+        """
+        Close all SPDY sessions.
+        """
+        for session in self._sessions.values():
+            try:
+                session._close()
+            except:
+                pass
+        self._sessions.clear()
+    
+    def exchange(self):
+        """
+        Return an unbounded client exchange. When a request is made on the 
+        exchange, it will be bound to a session corresponding to the 
+        host refered to in the request URL.
+        """
+        return SpdyClientExchange(self)
+        
+#-------------------------------------------------------------------------------            
+
 if __name__ == "__main__":
     pass

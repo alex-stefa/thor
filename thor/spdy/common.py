@@ -35,6 +35,7 @@ from urlparse import urlunsplit
 from collections import defaultdict
 
 import thor
+from thor.events import EventEmitter
 from thor.spdy import error
 from thor.spdy.frames import *
 
@@ -387,7 +388,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             'Remote endpoint has closed the connection.'))
         # TODO: what if conn closed while in the middle of reading frame data?
         
-   def _handle_pause(self, paused):
+    def _handle_pause(self, paused):
         """
         The application has requested to pause/unpause sending data. 
         Should be overrided by inheriting classes so that it actually 
@@ -584,7 +585,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         """
         Check stream-id is odd/even according to which side created it.
         """
-        if !self._valid_remote_stream_id(stream_id):
+        if not self._valid_remote_stream_id(stream_id):
             return False
         return True
        

@@ -43,54 +43,6 @@ res_remove_hdrs = invalid_hdrs + response_hdrs + response_pushed_hdrs
 
 #-------------------------------------------------------------------------------
 
-# TODO: figure out appropriate logging
-# TODO: spdy over tls (needs npn support)
-# TODO: read timeout for receiving a complete request on a stream?
-
-class SpdyServer(EventEmitter):
-    """
-    An asynchronous SPDY server.
-    
-    Event handlers that can be added:
-        start()
-        stop()
-        exchange(exchange) -- a new request has been received
-    """
-    def __init__(self,
-            host='localhost',
-            port=8080,
-            idle_timeout=None, # seconds a conn is kept open until a frame is received
-            loop=None,
-            spdy_session_class=SpdyServerSession,
-            tcp_server_class=TcpServer):
-        EventEmitter.__init__(self)
-        self._idle_timeout = idle_timeout
-        self._spdy_session_class = spdy_session_class
-        self._tcp_server = tcp_server_class(host, port, loop=loop)
-        self._tcp_server.on('connect', self._handle_conn)
-        thor.schedule(0, self.emit, 'start') # FIXME: does this work?
-        
-        # TODO:
-        self.use_tls = False # TODO: SPDY over TLS
-        self.certfile = None
-        self.keyfile = None
- 
-    def _handle_conn(self, tcp_conn):
-        """
-        Process a new client connection, tcp_conn.
-        """
-        session = self._spdy_session_class(self, tcp_conn)
-        
-    def shutdown(self):
-        """
-        Stop the server.
-        """
-        self._tcp_server.shutdown()
-        self.emit('stop')
-        # TODO: close existing sessions? (we have no reference to them here..)
-
-#-------------------------------------------------------------------------------
-
 class SpdyServerExchange(SpdyExchange):
     """
     A SPDY request-response exchange with support for server push streams.
@@ -189,7 +141,7 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
     """
     A SPDY connection to a client.
     """
-    def __init__(self, server, tcp_conn)
+    def __init__(self, server, tcp_conn):
         SpdySession.__init__(self, False, server._idle_timeout)
         self.server = server
         self._write_queue = [[] for x in Priority.range]
@@ -463,14 +415,14 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
             in-association-to for the original stream.
             """
             # FIXME: looping like this can take too much time
-            if frame.status = StatusCodes.CANCEL:
+            if frame.status == StatusCodes.CANCEL:
                 for exchange in self.exchanges.values():
                     if (exchange._pushed and 
                         exchange._stream_assoc_id == frame.stream_id):
                         self._close_exchange(exchange)
             exchange.emit('error', error.RstStreamError(
                 'Status code %s' % StatusCodes.str[frame.status]))
-        else:
+        except:
             self.emit('error', error.ProtocolError(
                 'Server received RST_STREAM for unknown stream with ID %d' %
                 frame.stream_id))
@@ -482,6 +434,54 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
             'Server received SYN_REPLY from client with stream ID %d.' %
             frame.stream_id))
                 
+#-------------------------------------------------------------------------------
+
+# TODO: figure out appropriate logging
+# TODO: spdy over tls (needs npn support)
+# TODO: read timeout for receiving a complete request on a stream?
+
+class SpdyServer(EventEmitter):
+    """
+    An asynchronous SPDY server.
+    
+    Event handlers that can be added:
+        start()
+        stop()
+        exchange(exchange) -- a new request has been received
+    """
+    def __init__(self,
+            host='localhost',
+            port=8080,
+            idle_timeout=None, # seconds a conn is kept open until a frame is received
+            loop=None,
+            spdy_session_class=SpdyServerSession,
+            tcp_server_class=TcpServer):
+        EventEmitter.__init__(self)
+        self._idle_timeout = idle_timeout
+        self._spdy_session_class = spdy_session_class
+        self._tcp_server = tcp_server_class(host, port, loop=loop)
+        self._tcp_server.on('connect', self._handle_conn)
+        thor.schedule(0, self.emit, 'start') # FIXME: does this work?
+        
+        # TODO:
+        self.use_tls = False # TODO: SPDY over TLS
+        self.certfile = None
+        self.keyfile = None
+ 
+    def _handle_conn(self, tcp_conn):
+        """
+        Process a new client connection, tcp_conn.
+        """
+        session = self._spdy_session_class(self, tcp_conn)
+        
+    def shutdown(self):
+        """
+        Stop the server.
+        """
+        self._tcp_server.shutdown()
+        self.emit('stop')
+        # TODO: close existing sessions? (we have no reference to them here..)
+
 #-------------------------------------------------------------------------------
 
 if __name__ == "__main__":
