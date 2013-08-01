@@ -259,6 +259,10 @@ def enum(*sequential, **named):
         >> 'FOUR'
         Numbers.str['four']
         >> 'FOUR'
+        Numbers.values
+        >> [0, 1, 2, 'four', 555]
+        Numbers.keys
+        >> ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE']
     """
     enums = dict(zip(sequential, range(len(sequential))), **named)
     reverse = dict((value, key) for key, value in enums.iteritems())
@@ -710,7 +714,8 @@ class SpdyMessageHandler(object):
                     elif self._input_frame_type == FrameTypes.RST_STREAM:
                         (stream_id, status) = struct.unpack_from("!II", frame_data)
                         stream_id &= STREAM_MASK
-                        self._handle_frame(RstStreamFrame(stream_id, status))
+                        if self._valid_status_code(self._input_frame_type, status):
+                            self._handle_frame(RstStreamFrame(stream_id, status))
                     elif self._input_frame_type == FrameTypes.SETTINGS:
                         settings_tuples = self._parse_settings(frame_data)
                         self._handle_frame(SettingsFrame(
@@ -721,7 +726,8 @@ class SpdyMessageHandler(object):
                     elif self._input_frame_type == FrameTypes.GOAWAY:
                         (last_stream_id, reason) = struct.unpack_from("!II", frame_data)
                         last_stream_id &= STREAM_MASK
-                        self._handle_frame(GoawayFrame(last_stream_id, reason))
+                        if self._valid_status_code(self._input_frame_type, reason):
+                            self._handle_frame(GoawayFrame(last_stream_id, reason))
                     elif self._input_frame_type == FrameTypes.HEADERS:
                         stream_id = struct.unpack_from("!I", frame_data)[0]
                         stream_id &= STREAM_MASK
@@ -779,7 +785,7 @@ class SpdyMessageHandler(object):
                     self._handle_error(error.HeaderError(
                         'Received header name length %d is too high.' % 
                         name_len),
-                        StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 """
                 The length of each name must be greater than zero. A recipient 
@@ -789,7 +795,7 @@ class SpdyMessageHandler(object):
                 if name_len == 0:
                     self._handle_error(error.HeaderError(
                         'Received zero length header name.'),
-                        StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 cursor += 4
                 name = data[cursor:cursor+name_len]
@@ -800,7 +806,7 @@ class SpdyMessageHandler(object):
                 if name.lower() != name:
                     self._handle_error(error.HeaderError(
                         'Received header name %s not in lower case.' % name),
-                        StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 """
                 Name: 0 or more octets, 8-bit sequences of data, excluding 0.
@@ -809,7 +815,7 @@ class SpdyMessageHandler(object):
                     self._handle_error(error.HeaderError(
                         'Received header name %s containing null byte.' % 
                         name),
-                        StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 cursor += name_len
                 """
@@ -818,7 +824,7 @@ class SpdyMessageHandler(object):
                 if name in names:
                     self._handle_error(error.HeaderError(
                         'Received duplicate header name %s.' % name),
-                        StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 names.add(name)
                 val_len = struct.unpack("!I", data[cursor:cursor+4])[0]
@@ -829,7 +835,7 @@ class SpdyMessageHandler(object):
                 if val_len > (1 << 24):
                     self._handle_error(error.HeaderError(
                         'Received header value length %d is too high.' % val_len),
-                        StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 cursor += 4
                 value = data[cursor:cursor+val_len]
@@ -846,7 +852,7 @@ class SpdyMessageHandler(object):
                     ('\x00\x00' in value)):
                     self._handle_error(error.HeaderError(
                         'Received invalid header value %s.' % value),
-                        StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 cursor += val_len
                 hdrs.append((name, value))
@@ -854,7 +860,7 @@ class SpdyMessageHandler(object):
                 self._handle_error(error.HeaderError(
                     'Number of headers read %d does not match expected value %d.' %
                     (num_hdrs, len(hdrs))),
-                    StatusCodes.PROTOCOL_ERROR, stream_id, False)
+                    StatusCodes.PROTOCOL_ERROR, stream_id, True)
                 return None
             return expand_dups(hdrs)
         except:
@@ -882,12 +888,12 @@ class SpdyMessageHandler(object):
                 if flags not in SettingsFlags.values:
                     self._handle_error(error.ParsingError(
                         'Received unknown settings flags %d.' % flags)), 
-                        GoawayReasons.PROTOCOL_ERROR, None, False)
+                        GoawayReasons.PROTOCOL_ERROR, None, True)
                     return None
                 if id not in SettingsIDs.values:
                     self._handle_error(error.ParsingError(
                         'Received unknown settings ID %d.' % id)), 
-                        GoawayReasons.PROTOCOL_ERROR, None, False)
+                        GoawayReasons.PROTOCOL_ERROR, None, True)
                     return None
                 entries.append((flags, id, value))
                 cursor += 8
@@ -895,13 +901,13 @@ class SpdyMessageHandler(object):
                 self._handle_error(error.ParsingError(
                     'Number of settings read %d does not match expected value %d.' %
                     (num_entry, len(entries))),
-                    GoawayReasons.PROTOCOL_ERROR, None, False)
+                    GoawayReasons.PROTOCOL_ERROR, None, True)
                 return None
             return entries
         except:
             self._handle_error(error.ParsingError(
                 'Failed while parsing settings block.'),
-                GoawayReasons.INTERNAL_ERROR, None, False)
+                GoawayReasons.INTERNAL_ERROR, None, True)
         return None
      
     def _valid_frame_size(self, data):
@@ -928,7 +934,7 @@ class SpdyMessageHandler(object):
                 [FrameTypes.SYN_STREAM, FrameTypes.SYN_REPLY, FrameTypes.HEADERS]):
                 stream_id = struct.unpack_from("!I", data) & STREAM_MASK
                 self._handle_error(err, 
-                    StatusCodes.FRAME_TOO_LARGE, stream_id, False)
+                    StatusCodes.FRAME_TOO_LARGE, stream_id, True)
                 self._handle_error(None, 
                     GoawayReasons.INTERNAL_ERROR, None, True)
             else
@@ -959,7 +965,7 @@ class SpdyMessageHandler(object):
                 [FrameTypes.SYN_STREAM, FrameTypes.SYN_REPLY, FrameTypes.HEADERS]):
                 stream_id = struct.unpack_from("!I", data) & STREAM_MASK
                 self._handle_error(err,
-                    StatusCodes.UNSUPPORTED_VERSION, stream_id, False)
+                    StatusCodes.UNSUPPORTED_VERSION, stream_id, True)
             else:
                 self._handle_error(err,
                     GoawayReasons.PROTOCOL_ERROR, None, True)
@@ -989,5 +995,23 @@ class SpdyMessageHandler(object):
             return False
         return True
             
-    
+    def _valid_status_code(self, frame_type, status):
+        """
+        Check that status codes are defined in the spec.
+        """
+        if (frame_type == FrameTypes.GOAWAY and
+            status not in GoawayReasons.values):
+            self._handle_error(error.ParsingError(
+                'Invalid GOAWAY status code %d.' % status),
+                GoawayReasons.PROTOCOL_ERROR, None, True)
+            return False
+        if (frame_type == FrameTypes.RST_STREAM and
+            status not in StatusCodes.values):
+            self._handle_error(error.ParsingError(
+                'Invalid RST_STREAM status code %d.' % status),
+                GoawayReasons.PROTOCOL_ERROR, None, True)
+            return False
+        return True
+        
+                 
 

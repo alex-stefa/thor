@@ -34,6 +34,7 @@ import time
 from urlparse import urlunsplit
 from collections import defaultdict
 
+import thor
 from thor.spdy import error
 from thor.spdy.frames import *
 
@@ -418,7 +419,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             if exchange is not None:
                 if err is not None:
                     exchange.emit('error', err)
-                self._close_exchange(exchange, status)
+                if fatal:
+                    self._close_exchange(exchange, status)
             else:
                 if err is not None:
                     self.emit('error', err)
