@@ -263,7 +263,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         EventEmitter.__init__(self)
         self.exchanges = dict()
         self.tcp_conn = None
-        self._origin = (None, None)
+        self._origin = (None, None) # (host, port)
         self._idle_timeout = idle_timeout
         self._idle_timeout_ev = None
         self._sent_goaway = False
@@ -293,6 +293,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         if self.tcp_conn:
             status.append(
               self.tcp_conn.tcp_connected and 'connected' or 'disconnected')
+        else:
+            status.append('unbound')
         return "<%s at %#x>" % (", ".join(status), id(self))
         
     ### Output methods to be implemented by inheriting classes
