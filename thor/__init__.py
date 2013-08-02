@@ -13,3 +13,7 @@ from thor.loop import run, stop, time, schedule, running
 from thor.tcp import TcpClient, TcpServer
 from thor.udp import UdpEndpoint
 from thor.events import on
+from http.client import HttpClient
+from http.server import HttpServer
+from spdy.client import SpdyClient
+from spdy.server import SpdyServer
