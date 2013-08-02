@@ -100,4 +100,4 @@ class ProtocolError(SpdyError):
     
 class PingError(SpdyError):
     desc = "Invalid ping ID"
-    
+

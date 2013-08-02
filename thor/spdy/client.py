@@ -304,7 +304,7 @@ class SpdyClientSession(SpdySession):
         """
         Set the read timeout associated to entity.
         """
-        if self._read_timeout and entity._read_timeout_ev is None:
+        if self._read_timeout > 0 and entity._read_timeout_ev is None:
             entity._read_timeout_ev = self.client._loop.schedule(
                 self._read_timeout, 
                 self._handle_error, 
@@ -502,9 +502,9 @@ class SpdyClient(EventEmitter):
             spdy_session_class=SpdyClientSession, 
             tcp_client_class=TcpClient):
         EventEmitter.__init__(self)
-        self._connect_timeout = connect_timeout
-        self._read_timeout = read_timeout
-        self._idle_timeout = idle_timeout
+        self._connect_timeout = connect_timeout if connect_timeout > 0 else None
+        self._read_timeout = read_timeout if read_timeout > 0 else None
+        self._idle_timeout = idle_timeout if idle_timeout > 0 else None
         self._sessions = dict()
         self._loop = loop or thor.loop._loop
         self._loop.on('stop', self.shutdown)
@@ -533,7 +533,7 @@ class SpdyClient(EventEmitter):
         
     def _remove_session(self, session):
         """
-        Closes and removes session from dictionary.
+        Removes (closed) session from dictionary.
         """
         try:
             if self._sessions[session._origin] == session:

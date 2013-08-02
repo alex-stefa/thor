@@ -183,7 +183,7 @@ ExchangeStates = enum('WAITING', 'STARTED', 'DONE')
 
 class SpdyExchange(EventEmitter):
     """
-    Holds information about a SPDY request-response exchange (a SPDY stream).
+    Holds information about a HTTP request-response exchange (a SPDY stream).
     """
     def __init__(self):
         EventEmitter.__init__(self)
@@ -497,7 +497,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         """
         Set the session idle timeout.
         """
-        if self._idle_timeout and self._idle_timeout_ev is None:
+        if self._idle_timeout > 0 and self._idle_timeout_ev is None:
             self._idle_timeout_ev = thor.schedule(
                 self._idle_timeout,
                 self._handle_error,

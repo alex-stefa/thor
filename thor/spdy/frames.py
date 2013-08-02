@@ -985,8 +985,8 @@ class SpdyMessageHandler(object):
         """
         if self._input_frame_len < MinFrameLen[self._input_frame_type]:
             self._handle_error(error.ParsingError(
-                'Frame length %d is too small for a %s frame' %
-                (self._input_frame_len, FrameTypes.str[self._input_frame_type])),
+                'Frame length %d is too small for a %s frame.' %
+                (size, FrameTypes.str[self._input_frame_type])),
                 GoawayReasons.INTERNAL_ERROR, None, True)
             return False
         return True
