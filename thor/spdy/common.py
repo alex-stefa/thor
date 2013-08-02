@@ -93,28 +93,6 @@ def get_values(hdr_tuples, name):
                [l.split(',') for l in
                     [i[1] for i in hdr_tuples if i[0].lower() == name]], []) 
             if len(v) > 0]
-
-def collapse_dups(hdr_tuples):
-    """
-    Given a list of header tuples, collapses values for identical header names
-    into a single string separated by nulls.
-    """
-    d = defaultdict(list)
-    for (n, v) in hdr_tuples:
-        d[n].extend([v])
-    return [(n, '\x00'.join(v)) for (n, v) in d.items()]
-    
-def expand_dups(hdr_tuples):
-    """
-    Given a list of header tuples, unpacks multiple null separated values
-    for the same header name.
-    """
-    out_tuples = list()
-    for (n, v) in hdr_tuples:
-        for val in v.split('\x00'):
-            if len(val) > 0:
-                out_tuples.append((n, val))
-    return out_tuples
     
 def clean_headers(hdr_tuples, invalid_hdrs):
     """
@@ -127,8 +105,8 @@ def clean_headers(hdr_tuples, invalid_hdrs):
     for entry in hdr_tuples:
         if not entry[0]:
             continue
-        name = entry[0].strip().lower()
-        value = entry[1] if entry[1] else ''
+        name = str(entry[0]).strip().lower()
+        value = str(entry[1]) if entry[1] else ''
         if name not in invalid_hdrs:
             clean_tuples.append((name, value))
     return clean_tuples
@@ -137,6 +115,10 @@ class HeaderDict(dict):
     """
     Standard dict() with additional helper methods for headers.
     """
+    def __str__(self):
+        return '\n\t' + '\n\t'.join(['%s: %s' % (n, ' | '.join(v)) 
+            for (n, v) in self.items()])
+    
     @property
     def method(self):
         try:
@@ -205,7 +187,8 @@ class SpdyExchange(EventEmitter):
         self._pushed = False # is it a server pushed stream?
                 
     def __str__(self):
-        return ('[STREAM ID%s AID%s P%d %s REQ_%s RES_%s %s]' % (
+        return ('[<%s> ID=%s AID=%s P%d %s REQ_%s RES_%s %s]' % (
+            self.__class__.__name__,
             str(self.stream_id) if self.stream_id else '?',
             str(self._stream_assoc_id) if self._stream_assoc_id else '?',
             self.priority,
@@ -371,7 +354,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self.tcp_conn.on('data', self._handle_input)
         self.tcp_conn.on('close', self._handle_closed)
         self.tcp_conn.on('pause', self._handle_pause)
-        seld._clear_idle_timeout()
+        self._clear_idle_timeout()
         self._set_idle_timeout()
         self._output('') # kick the output buffer
         # FIXME: is the above call necessary and should we wait for when we need to send data first?
@@ -411,7 +394,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
                 self.emit('error', err)
             if fatal:
                 self._close_active_exchanges(err)
-                self._close(status)
+                self.close(status)
         else: # stream error
             try:
                 exchange = self.exchanges[stream_id]
@@ -434,8 +417,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         """
         Closes the SPDY stream with given status code.
         """
-        exchange._req_state = DONE
-        exchange._res_state = DONE
+        exchange._req_state = ExchangeStates.DONE
+        exchange._res_state = ExchangeStates.DONE
         if status is not None:
             self._queue_frame(
                 Priority.MAX,

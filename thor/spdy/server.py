@@ -86,7 +86,7 @@ class SpdyServerExchange(SpdyExchange):
             if '@' in authority:
                 userinfo, authority = authority.split('@', 1)
             authority = authority.lower()
-            path = '/' + urlunsplit(('', '', path, query, fragment))
+            path = urlunsplit(('', '', path, query, fragment))
             self.session._res_start(self, status, scheme, authority, path,
                 res_hdrs, done)
         else:
@@ -137,7 +137,7 @@ class SpdyServerExchange(SpdyExchange):
         
 #-------------------------------------------------------------------------------
 
-class SpdyServerSession(SpdyMessageHandler, EventEmitter):
+class SpdyServerSession(SpdySession):
     """
     A SPDY connection to a client.
     """
@@ -224,7 +224,6 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
         # FIXME: is status necessary on pushed streams?
         res_hdrs.append((':status', str(status) if status else ''))
         res_hdrs.append((':version', 'HTTP/1.1'))
-        res_hdrs = collapse_dups(res_hdrs)
         fin_flag = Flags.FLAG_FIN if done else Flags.FLAG_NONE
         if exchange._pushed:
             req_hdrs.append((':scheme', scheme if scheme else ''))
@@ -251,7 +250,7 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
             
     def _res_headers(self, exchange, res_hdrs):
         if self._ensure_can_send(exchange):
-            res_hdrs = collapse_dups(clean_headers(res_hdrs, res_remove_hdrs))
+            res_hdrs = clean_headers(res_hdrs, res_remove_hdrs)
             self._queue_frame(
                 exchange.priority,
                 HeadersFrame(
@@ -268,7 +267,7 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
                     exchange.stream_id, 
                     chunk))
     
-    def _res_done(seld, exchange):
+    def _res_done(self, exchange):
         if self._ensure_can_send(exchange):
             self._queue_frame(
                 exchange.priority,
@@ -375,6 +374,7 @@ class SpdyServerSession(SpdyMessageHandler, EventEmitter):
             else:
                 self.server.emit('exchange', exchange)
                 exchange.emit('request_start', header_dict(frame.hdr_tuples))
+                exchange._req_state = ExchangeStates.STARTED
                 if frame.flags == Flags.FLAG_FIN:
                     exchange._req_state = ExchangeStates.DONE
                     exchange.emit('request_done')
@@ -448,6 +448,7 @@ class SpdyServer(EventEmitter):
         start()
         stop()
         exchange(exchange) -- a new request has been received
+        session(session) -- a new connection has been accepted
     """
     def __init__(self,
             host='localhost',
@@ -473,6 +474,7 @@ class SpdyServer(EventEmitter):
         Process a new client connection, tcp_conn.
         """
         session = self._spdy_session_class(self, tcp_conn)
+        self.emit('session', session)
         
     def shutdown(self):
         """

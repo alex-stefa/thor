@@ -52,8 +52,9 @@ class SpdyClientExchange(SpdyExchange):
         response_headers(header_dict)
         response_body(chunk)
         response_done()
-        pushed_response(exchage) -- new server pushed response associated with  
+        pushed_response(exchange) -- new server pushed response associated with  
             this exchange's request wrapped in a SpdyClientExchange instance
+        pause(paused)
         error(err)
     """
     def __init__(self, client):
@@ -89,8 +90,8 @@ class SpdyClientExchange(SpdyExchange):
                 return
         else:
             host, port = authority, 80
-        self.session = self.client._get_session((host, port))
-        path = '/' + urlunsplit(('', '', path, query, fragment))
+        self.session = self.client.session((host, port))
+        path = urlunsplit(('', '', path, query, fragment))
         self.session._req_start(self, method, scheme, authority, path, 
             req_hdrs, done)
         
@@ -164,7 +165,7 @@ class SpdyClientSession(SpdySession):
         return exchg
                 
     def _ensure_can_init(self, exchange):
-        if exchage._pushed:
+        if exchange._pushed:
             exchange.emit('error', error.ExchangeStateError(
                 'Cannont make a request on a pushed stream.'))
             return False
@@ -179,7 +180,7 @@ class SpdyClientSession(SpdySession):
         return True
 
     def _ensure_can_send(self, exchange):
-        if exchage._pushed:
+        if exchange._pushed:
             exchange.emit('error', error.ExchangeStateError(
                 'Cannont make a request on a pushed stream.'))
             return False
@@ -189,7 +190,7 @@ class SpdyClientSession(SpdySession):
             return False
         elif exchange._req_state == ExchangeStates.DONE:
             exchange.emit('error', 
-                error.ExchangeStateError('Request already sent or exchage cancelled.'))
+                error.ExchangeStateError('Request already sent or exchange cancelled.'))
             return False
         return True
     
@@ -202,42 +203,39 @@ class SpdyClientSession(SpdySession):
         req_hdrs.append((':scheme', scheme if scheme else ''))
         req_hdrs.append((':host', host if host else ''))
         req_hdrs.append((':path', path if path else ''))
-        req_hdrs = collapse_dups(req_hdrs)
         exchange.stream_id = self._next_created_stream_id()
         exchange.session = self
         self.exchanges[exchange.stream_id] = exchange
         if done:
             self._queue_frame(
-                exchage.priority,
+                exchange.priority,
                 SynStreamFrame(
                     Flags.FLAG_FIN, 
-                    exchage.stream_id,
+                    exchange.stream_id,
                     req_hdrs,
-                    exchage.priority,
-                    0, # stream_assoc_id
-                    0))
+                    exchange.priority,
+                    0, 0)) # stream_assoc_id, slot
             exchange._req_state = ExchangeStates.DONE
             self._set_read_timeout(exchange, 'start')
         else:
             self._queue_frame(
-                exchage.priority,
+                exchange.priority,
                 SynStreamFrame(
                     Flags.FLAG_NONE, 
-                    exchage.stream_id,
+                    exchange.stream_id,
                     req_hdrs,
-                    exchage.priority,
-                    0, # stream_assoc_id
-                    0))
+                    exchange.priority,
+                    0, 0)) # stream_assoc_id, slot
             exchange._req_state = ExchangeStates.STARTED
     
     def _req_headers(self, exchange, req_hdrs):
         if self._ensure_can_send(exchange):
-            req_hdrs = collapse_dups(clean_headers(req_hdrs, req_remove_hdrs))
+            req_hdrs = clean_headers(req_hdrs, req_remove_hdrs)
             self._queue_frame(
-                exchage.priority,
+                exchange.priority,
                 HeadersFrame(
                     Flags.FLAG_NONE,
-                    exchage.stream_id,
+                    exchange.stream_id,
                     req_hdrs))
     
     def _req_body(self, exchange, chunk):
@@ -288,8 +286,8 @@ class SpdyClientSession(SpdySession):
     ### Timeouts
     
     def _close_exchange(self, exchange, status=None):
-        self._clear_read_timeout(exchage)
-        SpdySession._close_exchange(self, exchage, status)
+        self._clear_read_timeout(exchange)
+        SpdySession._close_exchange(self, exchange, status)
 
     def _set_read_timeout(self, entity, kind):
         """
@@ -382,9 +380,9 @@ class SpdyClientSession(SpdySession):
                         self._handle_error(err, 
                             StatusCodes.PROTOCOL_ERROR, frame.stream_id)
                     else:
-                        exchage = self._init_pushed_exchg(frame)
-                        assoc_exchg.emit('pushed_response', exchage)
-                        exchage.emit('response_start', header_dict(frame.hdr_tuples))
+                        exchange = self._init_pushed_exchg(frame)
+                        assoc_exchg.emit('pushed_response', exchange)
+                        exchange.emit('response_start', header_dict(frame.hdr_tuples))
                         if frame.flags == Flags.FLAG_FIN:
                             exchange._res_state = ExchangeStates.DONE
                             exchange.emit('response_done')
@@ -438,7 +436,7 @@ class SpdyClientSession(SpdySession):
     def _frame_syn_reply(self, frame):
         exchange = self._exchange_or_die(frame.stream_id)
         if exchange:
-            if exchage._pushed:
+            if exchange._pushed:
                 self._handle_error(error.ProtocolError(
                     'SYN_REPLY frame received on server pushed stream.'),
                     StatusCodes.PROTOCOL_ERROR, frame.stream_id)
@@ -467,12 +465,13 @@ class SpdyClientSession(SpdySession):
                     self._handle_error(err, 
                         StatusCodes.PROTOCOL_ERROR, frame.stream_id)
                 else:
-                    exchage.emit('response_start', header_dict(frame.hdr_tuples))
+                    exchange.emit('response_start', header_dict(frame.hdr_tuples))
                     self._clear_read_timeout(exchange)
                     if frame.flags == Flags.FLAG_FIN:
                         exchange._res_state = ExchangeStates.DONE
                         exchange.emit('response_done')
                     else:
+                        exchange._res_state = ExchangeStates.STARTED
                         self._set_read_timeout(exchange, 'body')
         
 #-------------------------------------------------------------------------------
@@ -499,7 +498,7 @@ class SpdyClient(EventEmitter):
         self._idle_timeout = idle_timeout
         self._sessions = dict()
         self._loop = loop or thor.loop._loop
-        self._loop.on('stop', self.close)
+        self._loop.on('stop', self.shutdown)
         self._spdy_session_class = spdy_session_class
         self._tcp_client_class = tcp_client_class
 
@@ -511,7 +510,7 @@ class SpdyClient(EventEmitter):
         """
         Find an idle connection for (host, port), or create a new one.
         """
-        host, port = origin # FIXME: add scheme?
+        (host, port) = origin # FIXME: add scheme?
         try:
             session = self._sessions[origin]
         except KeyError:
@@ -520,7 +519,7 @@ class SpdyClient(EventEmitter):
             tcp_client.on('connect', session._bind)
             tcp_client.on('connect_error', session._handle_connect_error)
             tcp_client.connect(host, port, self._connect_timeout)
-            self.sessions[origin] = session
+            self._sessions[origin] = session
         return session
         
     def _remove_session(self, session):

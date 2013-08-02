@@ -53,7 +53,6 @@ class _z_stream(C.Structure):
         ("data_type", C.c_int),
         ("adler", C.c_ulong),
         ("reserved", C.c_ulong),
-        
     ]
 
 # TODO: get zlib version with ctypes
@@ -75,7 +74,7 @@ class Compressor:
     def __init__(self, level=-1, dictionary=None):
         self.level = level
         self.st = _z_stream()
-        err = _zlib.deflateInit_(C.byref(self.st), self.level, ZLIB_VERSION, C.sizeof(self.st))
+        err = _zlib.deflateInit(C.byref(self.st), self.level, ZLIB_VERSION, C.sizeof(self.st))
         assert err == Z_OK, err # FIXME: specific error
         if dictionary:
             err = _zlib.deflateSetDictionary(
@@ -107,7 +106,7 @@ class Decompressor:
     def __init__(self, dictionary=None):
         self.dictionary = dictionary
         self.st = _z_stream()
-        err = _zlib.inflateInit2_(C.byref(self.st), 15, ZLIB_VERSION, C.sizeof(self.st))
+        err = _zlib.inflateInit2(C.byref(self.st), 15, ZLIB_VERSION, C.sizeof(self.st))
         assert err == Z_OK, err # FIXME: more specific error
 
     def __call__(self, input):

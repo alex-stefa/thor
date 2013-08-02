@@ -29,12 +29,14 @@ THE SOFTWARE.
 
 import struct
 from operator import itemgetter
+from collections import defaultdict
 
 from thor.spdy import error
 
 compressed_hdrs = True
 try:
-    import c_zlib
+    #import c_zlib
+    compressed_hdrs = False
 except TypeError:
     # c_zlib loads "libz". However, that fails on Windows.
     compressed_hdrs = False
@@ -273,6 +275,30 @@ def enum(*sequential, **named):
     
 #-------------------------------------------------------------------------------
 
+def collapse_dups(hdr_tuples):
+    """
+    Given a list of header tuples, collapses values for identical header names
+    into a single string separated by nulls.
+    """
+    d = defaultdict(list)
+    for (n, v) in hdr_tuples:
+        d[n].extend([v])
+    return [(n, '\x00'.join(v)) for (n, v) in d.items()]
+    
+def expand_dups(hdr_tuples):
+    """
+    Given a list of header tuples, unpacks multiple null separated values
+    for the same header name.
+    """
+    out_tuples = list()
+    for (n, v) in hdr_tuples:
+        for val in v.split('\x00'):
+            if len(val) > 0:
+                out_tuples.append((n, val))
+    return out_tuples
+    
+#-------------------------------------------------------------------------------
+    
 FrameTypes = enum(
     DATA = 0x00,
     SYN_STREAM = 0x01,
@@ -289,7 +315,7 @@ Flags = enum(
     FLAG_NONE = 0x00, 
     FLAG_FIN = 0x01, 
     FLAG_UNIDIRECTIONAL = 0x02,
-    FLAG_SETTINGS_CLEAR_SETTINGS = 0x01) # FIXME: Flags.str[..] won't work here
+    FLAG_SETTINGS_CLEAR_SETTINGS = 0x04) # FIXME: Flags.str[..] won't work here
     
 ValidFlags = {
     FrameTypes.DATA: [Flags.FLAG_NONE, Flags.FLAG_FIN],
@@ -368,7 +394,7 @@ class SpdyFrame(object):
         self.flags = flags
     
     def __str__(self):
-        return '>> [%s] %s' % (FrameTypes.str[self.type], Flags.str[self.flags])
+        return '[<%s> %s' % (FrameTypes.str[self.type], Flags.str[self.flags])
         
     @staticmethod
     def _serialize_control_frame(type, flags, data):
@@ -385,10 +411,10 @@ class SpdyFrame(object):
         hdr_tuples = collapse_dups(hdr_tuples)
         fmt = ["!I"]
         args = [len(hdr_tuples)]
-        for (n,v) in hdr_tuples:
+        for (n, v) in hdr_tuples:
             # TODO: check for overflowing n, v lengths
             fmt.append("I%dsI%ds" % (len(n), len(v)))
-            args.extend([len(n), n, len(v), v])
+            args.extend([len(n), str(n), len(v), str(v)])
         return struct.pack("".join(fmt), *args)
         
     @staticmethod
@@ -411,8 +437,8 @@ class DataFrame(SpdyFrame):
         self.data = data
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' #%d L%d\n\t%s' % (
-            self.stream_id, len(self.data), data[:70])
+        return SpdyFrame.__str__(self) + ' ID=%d LEN=%d]\n%s' % (
+            self.stream_id, len(self.data), self.data[:160])
         
     def serialize(self, context):
         # TODO: check that stream_id and data len don't overflow
@@ -421,7 +447,7 @@ class DataFrame(SpdyFrame):
                 (self.flags << 24) + len(self.data),
                 self.data)
         
-class SynSteamFrame(SpdyFrame):
+class SynStreamFrame(SpdyFrame):
     """
     A SPDY SYN_STREAM frame.
     """
@@ -435,7 +461,7 @@ class SynSteamFrame(SpdyFrame):
         self.slot = slot
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' #%d A%d P%d S%d H%d\n%s' % (
+        return SpdyFrame.__str__(self) + ' ID=%d AID=%d P%d S%d HDRS=%d]\n%s' % (
             self.stream_id,
             self.stream_assoc_id,
             self.priority,
@@ -463,7 +489,7 @@ class SynReplyFrame(SpdyFrame):
         self.hdr_tuples = hdr_tuples
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' #%d H%d\n%s' % (
+        return SpdyFrame.__str__(self) + ' ID=%d HDRS=%d]\n%s' % (
             self.stream_id, 
             len(self.hdr_tuples), 
             self._str_tuples(self.hdr_tuples))
@@ -485,7 +511,7 @@ class HeadersFrame(SpdyFrame):
         self.hdr_tuples = hdr_tuples
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' #%d H%d\n%s' % (
+        return SpdyFrame.__str__(self) + ' ID=%d HDRS=%d]\n%s' % (
             self.stream_id, 
             len(self.hdr_tuples), 
             self._str_tuples(self.hdr_tuples))
@@ -507,7 +533,7 @@ class RstStreamFrame(SpdyFrame):
         self.status = status
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' #%d %s' % (
+        return SpdyFrame.__str__(self) + ' ID=%d %s]' % (
             self.stream_id, StatusCodes.str[self.status])
 
     def serialize(self, context):
@@ -523,7 +549,7 @@ class SettingsFrame(SpdyFrame):
         self.settings_tuples = settings_tuples
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + '\n\t%s' % (
+        return SpdyFrame.__str__(self) + ']\n\t%s' % (
             '\n\t'.join(['%s = %s (%s)' % (
                     SettingsIDs.str[s_id],
                     str(s_val),
@@ -549,7 +575,7 @@ class PingFrame(SpdyFrame):
         self.ping_id = ping_id
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' PING_ID=%d' % self.ping_id
+        return SpdyFrame.__str__(self) + ' PING_ID=%d]' % self.ping_id
 
     def serialize(self, context):
         data = struct.pack("!I", self.ping_id)
@@ -565,7 +591,7 @@ class GoawayFrame(SpdyFrame):
         self.reason = reason
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' #%d %s' % (
+        return SpdyFrame.__str__(self) + ' LSID=%d %s]' % (
             self.last_stream_id, GoawayReasons.str[self.reason])
 
     def serialize(self, context):
@@ -584,7 +610,7 @@ class WindowUpdateFrame(SpdyFrame):
         self.size = size
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' #%d SIZE=%d' % (
+        return SpdyFrame.__str__(self) + ' ID=%d SIZE=%d]' % (
             self.stream_id, self.size)
 
     def serialize(self, context):
@@ -601,7 +627,7 @@ class CredentialFrame(SpdyFrame): # TODO: add CREDENTIAL frame support
         SpdyFrame.__init__(self, FrameTypes.CREDENTIAL, Flags.FLAG_NONE)
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ''
+        return SpdyFrame.__str__(self) + ']'
 
     def serialize(self, context):
         data = ''
@@ -627,8 +653,8 @@ class SpdyMessageHandler(object):
             self._compress = c_zlib.Compressor(-1, dictionary)
             self._decompress = c_zlib.Decompressor(dictionary)
         else:
-            self._compress = dummy
-            self._decompress = dummy
+            self._compress = (lambda x: x)
+            self._decompress = (lambda x: x)
         self._max_control_frame_size = 8192 
         """
         Note that full length control frames (16MB) can be large for 
@@ -695,13 +721,13 @@ class SpdyMessageHandler(object):
                         priority >>= 5
                         hdr_tuples = self._parse_hdrs(frame_data[10:], stream_id)
                         if hdr_tuples is not None:
-                            self._handle_frame(SynSteamFrame(
+                            self._handle_frame(SynStreamFrame(
                                 self._input_flags,
                                 stream_id,
-                                stream_assoc_id,
+                                hdr_tuples,
                                 priority,
-                                slot,
-                                hdr_tuples))
+                                stream_assoc_id,
+                                slot))
                     elif self._input_frame_type == FrameTypes.SYN_REPLY:
                         stream_id = struct.unpack_from("!I", frame_data)[0]
                         stream_id &= STREAM_MASK
@@ -747,7 +773,7 @@ class SpdyMessageHandler(object):
                         self._handle_frame(CredentialFrame())
                     else: # this should not be reachable
                         raise Exception('Unknown frame type %d.' % self._input_frame_type)
-                self._input_state = WAITING
+                self._input_state = InputStates.WAITING
                 if rest:
                     self._handle_input(rest)
             else: # don't have complete frame yet
@@ -928,7 +954,7 @@ class SpdyMessageHandler(object):
         err = error.FrameSizeError(
                     ('Received control frame with size %d '
                     'larger than maximum accepted size %d.') %
-                    size, self._max_control_frame_size)
+                    (size, self._max_control_frame_size))
         if size > self._max_control_frame_size:
             if len(data) >= 4 and (self._input_frame_type in 
                 [FrameTypes.SYN_STREAM, FrameTypes.SYN_REPLY, FrameTypes.HEADERS]):
