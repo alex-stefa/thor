@@ -55,9 +55,10 @@ class SpdyServerExchange(SpdyExchange):
         pause(paused)
         error(err)
     """
-    def __init__(self, server):
+    def __init__(self, server, session):
         SpdyExchange.__init__(self)
         self.server = server
+        self.session = session
         
     ### "Public" methods
    
@@ -140,6 +141,15 @@ class SpdyServerExchange(SpdyExchange):
 class SpdyServerSession(SpdySession):
     """
     A SPDY connection to a client.
+    
+    Event handlers that can be added:
+        exchange(exchange) -- a new SpdyServerExchange request has been received
+        bound(tcp_conn)
+        frame(frame)
+        goaway(reason, last_stream_id)
+        pause(paused)
+        error(err)
+        close()
     """
     def __init__(self, server, tcp_conn):
         SpdySession.__init__(self, False, server._idle_timeout)
@@ -157,8 +167,7 @@ class SpdyServerSession(SpdySession):
     ### Exchange response methods 
     
     def _init_pushed_exchg(self, assoc_exchg):
-        exchg = SpdyServerExchange(self.server)
-        exchg.session = self
+        exchg = SpdyServerExchange(self.server, self)
         exchg.stream_id = self._next_created_stream_id()
         exchg.priority = assoc_exchg.priority
         exchg._stream_assoc_id = assoc_exchg.stream_id
@@ -169,8 +178,7 @@ class SpdyServerSession(SpdySession):
         return exchg
         
     def _init_exchg(self, syn_stream_frame):
-        exchg = SpdyServerExchange(self.server)
-        exchg.session = self
+        exchg = SpdyServerExchange(self.server, self)
         exchg.stream_id = syn_stream_frame.stream_id
         self._highest_accepted_stream_id = exchg.stream_id
         exchg.priority = syn_stream_frame.priority
@@ -367,12 +375,12 @@ class SpdyServerSession(SpdySession):
                 host, path, scheme, and version headers, the server MUST 
                 reply with a HTTP 400 Bad Request reply.
                 """
-                self.server.emit('exchange', exchange)
+                self.emit('exchange', exchange)
                 exchange.emit('error', err)
                 exchange.response_start(None, "400 Bad Request", done=True)
                 # TODO: exchange._req_state = ExchangeStates.DONE ?
             else:
-                self.server.emit('exchange', exchange)
+                self.emit('exchange', exchange)
                 exchange.emit('request_start', header_dict(frame.hdr_tuples))
                 exchange._req_state = ExchangeStates.STARTED
                 if frame.flags == Flags.FLAG_FIN:
@@ -446,8 +454,7 @@ class SpdyServer(EventEmitter):
     Event handlers that can be added:
         start()
         stop()
-        exchange(exchange) -- a new request has been received
-        session(session) -- a new connection has been accepted
+        session(session) -- a new SpdyServerSession connection has been accepted
     """
     def __init__(self,
             host='localhost',

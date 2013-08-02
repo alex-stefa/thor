@@ -57,9 +57,10 @@ class SpdyClientExchange(SpdyExchange):
         pushed_response(exchange) -- new server pushed response associated with  
             this exchange's request wrapped in a SpdyClientExchange instance
     """
-    def __init__(self, client):
+    def __init__(self, client, session):
         SpdyExchange.__init__(self)
         self.client = client
+        self.session = session
         self._read_timeout_ev = None
         
     ### "Public" methods
@@ -90,7 +91,6 @@ class SpdyClientExchange(SpdyExchange):
                 return
         else:
             host, port = authority, 80
-        self.session = self.client.session((host, port))
         path = urlunsplit(('', '', path, query, fragment))
         self.session._req_start(self, method, scheme, authority, path, 
             req_hdrs, done)
@@ -130,11 +130,18 @@ class SpdyClientExchange(SpdyExchange):
 class SpdyClientSession(SpdySession):
     """
     A SPDY connection to a server.
+    
+    Event handlers that can be added:
+        bound(tcp_conn)
+        frame(frame)
+        goaway(reason, last_stream_id)
+        pause(paused)
+        error(err)
+        close()
     """
-    def __init__(self, client, origin):
+    def __init__(self, client):
         SpdySession.__init__(self, True, client._idle_timeout)
         self.client = client
-        self.origin = origin # (host, port)
         self._read_timeout = client._read_timeout
         self._output_buffer = list()
         self.frame_handlers[FrameTypes.DATA].append(self._frame_data)
@@ -144,6 +151,12 @@ class SpdyClientSession(SpdySession):
         self.frame_handlers[FrameTypes.RST_STREAM].append(self._frame_rst_stream)
 
     ### "Public" methods
+        
+    def exchange(self):
+        """
+        Returns a new exchange useful to make a new request.
+        """
+        return SpdyClientExchange(self.client, self)
     
     def close(self, reason=GoawayReasons.OK):
         SpdySession.close(self, reason)
@@ -152,8 +165,7 @@ class SpdyClientSession(SpdySession):
     ### Exchange request methods
     
     def _init_pushed_exchg(self, syn_stream_frame):
-        exchg = SpdyClientExchange(self.client)
-        exchg.session = self
+        exchg = SpdyClientExchange(self.client, self)
         exchg.stream_id = syn_stream_frame.stream_id
         self._highest_accepted_stream_id = syn_stream_frame.stream_id
         exchg.priority = syn_stream_frame.priority
@@ -204,7 +216,6 @@ class SpdyClientSession(SpdySession):
         req_hdrs.append((':host', host if host else ''))
         req_hdrs.append((':path', path if path else ''))
         exchange.stream_id = self._next_created_stream_id()
-        exchange.session = self
         self.exchanges[exchange.stream_id] = exchange
         if done:
             self._queue_frame(
@@ -512,7 +523,7 @@ class SpdyClient(EventEmitter):
         try:
             session = self._sessions[origin]
         except KeyError:
-            session = self._spdy_session_class(self, origin)
+            session = self._spdy_session_class(self)
             tcp_client = self._tcp_client_class(self._loop)
             tcp_client.on('connect', session._bind)
             tcp_client.on('connect_error', session._handle_connect_error)
@@ -525,8 +536,8 @@ class SpdyClient(EventEmitter):
         Closes and removes session from dictionary.
         """
         try:
-            if self._sessions[session.origin] == session:
-                del self._sessions[session.origin]
+            if self._sessions[session._origin] == session:
+                del self._sessions[session._origin]
         except KeyError:
             pass
             
@@ -537,14 +548,6 @@ class SpdyClient(EventEmitter):
         for session in self._sessions.values():
             session.close()
         self._sessions.clear()
-    
-    def exchange(self):
-        """
-        Return an unbounded client exchange. When a request is made on the 
-        exchange, it will be bound to a session corresponding to the 
-        host refered to in the request URL.
-        """
-        return SpdyClientExchange(self)
         
 #-------------------------------------------------------------------------------            
 

@@ -263,6 +263,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         EventEmitter.__init__(self)
         self.exchanges = dict()
         self.tcp_conn = None
+        self._origin = (None, None)
         self._idle_timeout = idle_timeout
         self._idle_timeout_ev = None
         self._sent_goaway = False
@@ -361,6 +362,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         Binds the session to a TCP connection; should be called only once.
         """
         self.tcp_conn = tcp_conn
+        self._origin = (tcp_conn.host, tcp_conn.port)
         self.tcp_conn.on('data', self._handle_input)
         self.tcp_conn.on('close', self._handle_closed)
         self.tcp_conn.on('pause', self._handle_pause)

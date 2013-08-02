@@ -1,5 +1,6 @@
 
 If a server receives a request where the sum of the data frame payload lengths does not equal the size of the Content-Length header, the server MUST return a 400 (Bad Request) error.
+
 POST-specific changes:
 
 Although POSTs are inherently chunked, POST requests SHOULD also be accompanied by a Content-Length header. There are two reasons for this: First, it assists with upload progress meters for an improved user experience. But second, we know from early versions of SPDY that failure to send a content length header is incompatible with many existing HTTP server implementations. Existing user-agents do not omit the Content-Length header, and server implementations have come to depend upon this.
