@@ -199,7 +199,7 @@ class SpdyServerSession(SpdySession):
                         err.ExchangeStateError('Cannot push new stream for '
                         'closed associated stream.'))
                     return False
-            except:
+            except KeyError:
                 exchange.emit('error',
                     err.ExchangeStateError('Cannot push new stream for '
                     'unknown associated stream.'))
@@ -383,8 +383,6 @@ class SpdyServerSession(SpdySession):
                         'Client set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
     
     def _frame_headers(self, frame):
-        # TODO: "If the server sends a HEADERS frame containing duplicate headers with a previous HEADERS frame for the same stream, the client must issue a stream error (Section 2.4.2) with error code PROTOCOL ERROR."
-        # TODO: "If the server sends a HEADERS frame after sending a data frame for the same stream, the client MAY ignore the HEADERS frame. Ignoring the HEADERS frame after a data frame prevents handling of HTTP's trailing headers."
         exchange = self._exchange_or_die(frame.stream_id)
         if exchange:
             if exchange._req_state != ExchangeStates.STARTED:
@@ -406,27 +404,28 @@ class SpdyServerSession(SpdySession):
         """
         try:
             exchange = self.exchanges[frame.stream_id]
-            self._close_exchange(exchange)
-            """
-            To cancel all server push streams related to a request, the client 
-            may issue a stream error (Section 2.4.2) with error code CANCEL on
-            the associated-stream-id. By cancelling that stream, the server MUST
-            immediately stop sending frames for any streams with 
-            in-association-to for the original stream.
-            """
-            # FIXME: looping like this can take too much time
-            if frame.status == StatusCodes.CANCEL:
-                for exchange in self.exchanges.values():
-                    if (exchange._pushed and 
-                        exchange._stream_assoc_id == frame.stream_id):
-                        self._close_exchange(exchange)
-            exchange.emit('error', error.RstStreamError(
-                'Status code %s' % StatusCodes.str[frame.status]))
-        except:
+        except KeyError:
+            # FIXME: should the session be terminated in this case?
             self.emit('error', error.ProtocolError(
                 'Server received RST_STREAM for unknown stream with ID %d' %
                 frame.stream_id))
-            # FIXME: should the session be terminated in this case?
+            return
+        self._close_exchange(exchange)
+        """
+        To cancel all server push streams related to a request, the client 
+        may issue a stream error (Section 2.4.2) with error code CANCEL on
+        the associated-stream-id. By cancelling that stream, the server MUST
+        immediately stop sending frames for any streams with 
+        in-association-to for the original stream.
+        """
+        # FIXME: looping like this can take too much time
+        if frame.status == StatusCodes.CANCEL:
+            for exchange in self.exchanges.values():
+                if (exchange._pushed and 
+                    exchange._stream_assoc_id == frame.stream_id):
+                    self._close_exchange(exchange)
+        exchange.emit('error', error.RstStreamError(
+            'Status code %s' % StatusCodes.str[frame.status]))
         
     def _frame_syn_reply(self, frame):
         # clients should never be sending SYN_REPLY

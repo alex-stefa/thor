@@ -41,9 +41,9 @@ from thor.spdy.frames import *
 
 #-------------------------------------------------------------------------------
 
-invalid_hdrs = ['connection', 'keep-alive', 'proxy-authenticate',
-                   'proxy-authorization', 'te', 'trailers',
-                   'transfer-encoding', 'upgrade', 'proxy-connection']
+invalid_hdrs = ['connection', 'host', 'keep-alive', 'upgrade',
+            'proxy-authorization', 'proxy-authenticate', 'proxy-connection',
+            'te', 'transfer-encoding', 'trailers']
 request_hdrs = [':method', ':version', ':scheme', ':host', ':path']
 response_hdrs = [':status', ':version']
 response_pushed_hdrs = [':scheme', ':host', ':path']
@@ -123,31 +123,31 @@ class HeaderDict(dict):
     def method(self):
         try:
             return self[':method'][-1]
-        except:
+        except (IndexError, KeyError):
             return None
     @property
     def path(self):
         try:
             return self[':path'][-1]
-        except:
+        except (IndexError, KeyError):
             return None
     @property
     def host(self):
         try:
             return self[':host'][-1]
-        except:
+        except (IndexError, KeyError):
             return None
     @property
     def version(self):
         try:
             return self[':version'][-1]
-        except:
+        except (IndexError, KeyError):
             return None
     @property
     def scheme(self):
         try:
             return self[':scheme'][-1]
-        except:
+        except (IndexError, KeyError):
             return None
     @property
     def uri(self):
@@ -156,14 +156,24 @@ class HeaderDict(dict):
     def status(self):
         try:
             status = self[':status'][-1]
-        except:
+        except (IndexError, KeyError):
             return (None, None)
         try:
             code, phrase = status.split(None, 1)
         except ValueError:
             code = status.rstrip()
             phrase = ''
+        try:
+            code = int(code)
+        except ValueError: # there is a status code, but not integer
+            return (None, None)
         return (code, phrase)
+    @property
+    def content_length(self):
+        try:
+            return int(self['content-length'][-1])
+        except (IndexError, KeyError, ValueError):
+            return None
     # TODO: ensure there is at most one header value
 
 #-------------------------------------------------------------------------------
@@ -396,10 +406,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
                 self._close_active_exchanges(err)
                 self.close(status)
         else: # stream error
-            try:
-                exchange = self.exchanges[stream_id]
-            except:
-                exchange = None
+            exchange = self.exchanges.get(stream_id, None)
             if exchange is not None:
                 if err is not None:
                     exchange.emit('error', err)
@@ -458,7 +465,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             return
         try:
             ping_timer = self._pings[ping_id]
-        except:
+        except KeyError:
             """
             If a server receives an even numbered PING which it did not 
             initiate, it must ignore the PING. If a client receives an odd 
@@ -577,7 +584,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             return self.exchanges[stream_id]
             # TODO: ideally, closed streams should be purged from memory
             # NOTE: returned exchange should be checked if active.
-        except:
+        except KeyError:
             """
             If an endpoint receives a data frame for a stream-id which is not 
             open and the endpoint has not sent a GOAWAY (Section 2.6.6) frame,
@@ -593,7 +600,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
        
     def _header_error(self, hdr_tuples, hdr_names):
         """
-        Returns error if missing or multiple values for each given header name.
+        Return error if missing or multiple values for each given header name.
         """
         for hdr_name in hdr_names:
             values = get_header(hdr_tuples, hdr_name)
@@ -603,6 +610,14 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             if len(values) > 1:
                 return error.HeaderError(
                     'Multiple %s header values received.' % hdr_name)
+        """
+        The Connection, Host, Keep-Alive, Proxy-Connection, and 
+        Transfer-Encoding headers are not valid and MUST not be sent.
+        """
+        for (name, value) in hdr_tuples:
+            if name.lower() in invalid_hdrs:
+                return error.HeaderError(
+                    'Header %s is not allowed.' % name.lower())
         return None
 
     ### Main frame handling method

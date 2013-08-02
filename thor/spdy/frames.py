@@ -315,7 +315,7 @@ Flags = enum(
     FLAG_NONE = 0x00, 
     FLAG_FIN = 0x01, 
     FLAG_UNIDIRECTIONAL = 0x02,
-    FLAG_SETTINGS_CLEAR_SETTINGS = 0x04) # FIXME: Flags.str[..] won't work here
+    FLAG_SETTINGS_CLEAR_SETTINGS = 0x01)
     
 ValidFlags = {
     FrameTypes.DATA: [Flags.FLAG_NONE, Flags.FLAG_FIN],
@@ -383,6 +383,16 @@ Priority = enum(
 SPDY_VERSION = 3
 STREAM_MASK = 0x7fffffff # masks highest bit (value equals to max stream ID)
 
+# ugly hack to fix string conversion because of duplicate values in Flags
+def flags_str(frame_type, flags):
+    if flags == Flags.FLAG_FIN:
+        if frame_type == FrameTypes.SETTINGS:
+            return 'FLAG_SETTINGS_CLEAR_SETTINGS'
+        else:
+            return 'FLAG_FIN'
+    else:
+        return Flags.str[flags]
+
 #-------------------------------------------------------------------------------
 
 class SpdyFrame(object):    
@@ -394,7 +404,9 @@ class SpdyFrame(object):
         self.flags = flags
     
     def __str__(self):
-        return '[<%s> %s' % (FrameTypes.str[self.type], Flags.str[self.flags])
+        return '[<%s> %s' % (
+            FrameTypes.str[self.type], 
+            flags_str(self.type, self.flags))
         
     @staticmethod
     def _serialize_control_frame(type, flags, data):
@@ -889,9 +901,9 @@ class SpdyMessageHandler(object):
                     StatusCodes.PROTOCOL_ERROR, stream_id, True)
                 return None
             return expand_dups(hdrs)
-        except:
+        except (IndexError, struct.error) as err:
             self._handle_error(error.ParsingError(
-                'Failed while parsing header block.'),
+                'Failed while parsing header block [%s].' % str(err)),
                 GoawayReasons.INTERNAL_ERROR, None, True)
         return None
         
@@ -930,9 +942,9 @@ class SpdyMessageHandler(object):
                     GoawayReasons.PROTOCOL_ERROR, None, True)
                 return None
             return entries
-        except:
+        except (IndexError, struct.error) as err:
             self._handle_error(error.ParsingError(
-                'Failed while parsing settings block.'),
+                'Failed while parsing settings block [%s].' % str(err)),
                 GoawayReasons.INTERNAL_ERROR, None, True)
         return None
      

@@ -52,10 +52,10 @@ class SpdyClientExchange(SpdyExchange):
         response_headers(header_dict)
         response_body(chunk)
         response_done()
-        pushed_response(exchange) -- new server pushed response associated with  
-            this exchange's request wrapped in a SpdyClientExchange instance
         pause(paused)
         error(err)
+        pushed_response(exchange) -- new server pushed response associated with  
+            this exchange's request wrapped in a SpdyClientExchange instance
     """
     def __init__(self, client):
         SpdyExchange.__init__(self)
@@ -355,46 +355,43 @@ class SpdyClientSession(SpdySession):
         elif self._valid_new_stream_id(frame.stream_id):
             try:
                 assoc_exchg = self.exchanges[frame.stream_assoc_id]
-            except:
-                assoc_exchg = None
+            except KeyError:
                 self._handle_error(error.ProtocolError(
                     ('Client received pushed SYN_STREAM associated '
                      'to unknown stream ID %d.') % frame.stream_assoc_id),
                     StatusCodes.INVALID_STREAM, frame.stream_id)
-            if assoc_exchg:
-                if assoc_exchg._res_state == ExchangeStates.DONE:
-                    self._handle_error(error.ProtocolError(
-                        ('Client received pushed SYN_STREAM associated '
-                         'to closed stream ID %d.') % frame.stream_assoc_id),
-                        StatusCodes.INVALID_STREAM, frame.stream_id)
+                return
+            if assoc_exchg._res_state == ExchangeStates.DONE:
+                self._handle_error(error.ProtocolError(
+                    ('Client received pushed SYN_STREAM associated '
+                     'to closed stream ID %d.') % frame.stream_assoc_id),
+                    StatusCodes.INVALID_STREAM, frame.stream_id)
+            else:
+                err = self._header_error(frame.hdr_tuples, response_pushed_hdrs)
+                if err:
+                    """
+                    When a client receives a SYN_STREAM from the server 
+                    without the ':host', ':scheme', and ':path' headers i
+                    n the Name/Value section, it MUST reply with a 
+                    RST_STREAM with error code HTTP_PROTOCOL_ERROR.
+                    """
+                    # NOTE: there is no HTTP_PROTOCOL_ERROR in spdy/3 spec
+                    self._handle_error(err, 
+                        StatusCodes.PROTOCOL_ERROR, frame.stream_id)
                 else:
-                    err = self._header_error(frame.hdr_tuples, response_pushed_hdrs)
-                    if err:
-                        """
-                        When a client receives a SYN_STREAM from the server 
-                        without the ':host', ':scheme', and ':path' headers i
-                        n the Name/Value section, it MUST reply with a 
-                        RST_STREAM with error code HTTP_PROTOCOL_ERROR.
-                        """
-                        # NOTE: there is no HTTP_PROTOCOL_ERROR in spdy/3 spec
-                        self._handle_error(err, 
-                            StatusCodes.PROTOCOL_ERROR, frame.stream_id)
+                    exchange = self._init_pushed_exchg(frame)
+                    assoc_exchg.emit('pushed_response', exchange)
+                    exchange.emit('response_start', header_dict(frame.hdr_tuples))
+                    if frame.flags == Flags.FLAG_FIN:
+                        exchange._res_state = ExchangeStates.DONE
+                        exchange.emit('response_done')
+                    elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
+                        self._set_read_timeout(exchange, 'body')
                     else:
-                        exchange = self._init_pushed_exchg(frame)
-                        assoc_exchg.emit('pushed_response', exchange)
-                        exchange.emit('response_start', header_dict(frame.hdr_tuples))
-                        if frame.flags == Flags.FLAG_FIN:
-                            exchange._res_state = ExchangeStates.DONE
-                            exchange.emit('response_done')
-                        elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
-                            self._set_read_timeout(exchange, 'body')
-                        else:
-                            exchange.emit('error', error.ProtocolError(
-                                'Server did not set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
+                        exchange.emit('error', error.ProtocolError(
+                            'Server did not set FLAG_UNIDIRECTIONAL in SYN_STREAM.'))
     
     def _frame_headers(self, frame):
-        # TODO: "If the server sends a HEADERS frame containing duplicate headers with a previous HEADERS frame for the same stream, the client must issue a stream error (Section 2.4.2) with error code PROTOCOL ERROR."
-        # TODO: "If the server sends a HEADERS frame after sending a data frame for the same stream, the client MAY ignore the HEADERS frame. Ignoring the HEADERS frame after a data frame prevents handling of HTTP's trailing headers."
         exchange = self._exchange_or_die(frame.stream_id)
         if exchange:
             if exchange._res_state == ExchangeStates.DONE:
@@ -424,14 +421,15 @@ class SpdyClientSession(SpdySession):
         """
         try:
             exchange = self.exchanges[frame.stream_id]
-            self._close_exchange(exchange)
-            exchange.emit('error', error.RstStreamError(
-                'Status code %s' % StatusCodes.str[frame.status]))
-        except:
+        except KeyError:
+            # FIXME: should the session be terminated in this case?
             self.emit('error', error.ProtocolError(
                 'Server received RST_STREAM for unknown stream with ID %d' %
                 frame.stream_id))
-            # FIXME: should the session be terminated in this case?
+            return
+        self._close_exchange(exchange)
+        exchange.emit('error', error.RstStreamError(
+            'Status code %s' % StatusCodes.str[frame.status]))
         
     def _frame_syn_reply(self, frame):
         exchange = self._exchange_or_die(frame.stream_id)
@@ -529,7 +527,7 @@ class SpdyClient(EventEmitter):
         try:
             if self._sessions[session.origin] == session:
                 del self._sessions[session.origin]
-        except:
+        except KeyError:
             pass
             
     def shutdown(self):
@@ -537,10 +535,7 @@ class SpdyClient(EventEmitter):
         Close all SPDY sessions.
         """
         for session in self._sessions.values():
-            try:
-                session._close()
-            except:
-                pass
+            session.close()
         self._sessions.clear()
     
     def exchange(self):
