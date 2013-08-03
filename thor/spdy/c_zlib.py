@@ -30,6 +30,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+# see: https://gist.github.com/mnot/242459
+# see: https://gist.github.com/colinmarc/2152055
 
 import ctypes as C
 from ctypes import util
