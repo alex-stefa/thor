@@ -197,12 +197,12 @@ class SpdyExchange(EventEmitter):
         self._pushed = False # is it a server pushed stream?
                 
     def __str__(self):
-        return ('[<%s> ID=%s AID=%s P%d %s REQ_%s RES_%s %s]' % (
+        return ('[<%s> ID=%s %sP%d %sREQ_%s RES_%s %s]' % (
             self.__class__.__name__,
             str(self.stream_id) if self.stream_id else '?',
-            str(self._stream_assoc_id) if self._stream_assoc_id else '?',
+            ('AID=%d ' % self._stream_assoc_id) if self._stream_assoc_id else '',
             self.priority,
-            'PUSHED' if self._pushed else '',
+            'PUSHED ' if self._pushed else '',
             ExchangeStates.str[self._req_state],
             ExchangeStates.str[self._res_state],
             time.strftime('%H:%M:%S', time.gmtime(self.timestamp))
@@ -264,7 +264,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self.exchanges = dict()
         self.tcp_conn = None
         self._loop = loop or global_loop
-        self._origin = (None, None) # (host, port)
+        self._origin = None # (host, port)
         self._idle_timeout = idle_timeout
         self._idle_timeout_ev = None
         self._sent_goaway = False
@@ -291,12 +291,17 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         
     def __repr__(self):
         status = [self.__class__.__module__ + "." + self.__class__.__name__]
+        if self.origin:
+            status.append(self.origin)
         if self.tcp_conn:
             status.append(
               self.tcp_conn.tcp_connected and 'connected' or 'disconnected')
         else:
             status.append('unbound')
         return "<%s at %#x>" % (", ".join(status), id(self))
+    
+    def __str__(self):
+        return '[<%s> %s]' % (self.__class__.__name__, self.origin or 'unbound')
         
     ### Output methods to be implemented by inheriting classes
 
@@ -314,6 +319,10 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         Session alive or not.
         """
         return self.tcp_conn is not None
+    
+    @property
+    def origin(self):
+        return ('%s:%d' % self._origin) if self._origin else None
     
     def ping_timer(self, ping_timeout=None):
         """
@@ -356,6 +365,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         if self.tcp_conn:
             self.tcp_conn.close()
             self.tcp_conn = None
+            #self._origin = None # FIXME: do we want this?
         self.emit('close')
 
     ### TCP handling methods

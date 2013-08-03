@@ -519,7 +519,6 @@ class SpdyClient(EventEmitter):
         """
         Find an idle connection for (host, port), or create a new one.
         """
-        (host, port) = origin # FIXME: add scheme?
         try:
             session = self._sessions[origin]
         except KeyError:
@@ -527,6 +526,7 @@ class SpdyClient(EventEmitter):
             tcp_client = self._tcp_client_class(self._loop)
             tcp_client.on('connect', session._bind)
             tcp_client.on('connect_error', session._handle_connect_error)
+            (host, port) = origin # FIXME: add scheme?
             tcp_client.connect(host, port, self._connect_timeout)
             self._sessions[origin] = session
         return session

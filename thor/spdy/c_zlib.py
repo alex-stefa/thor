@@ -34,8 +34,8 @@ SOFTWARE.
 import ctypes as C
 from ctypes import util
 
-# TODO: catch errors
-_zlib = C.cdll.LoadLibrary(util.find_library('libz'))
+_zlib = C.cdll.LoadLibrary(util.find_library('z')) # before: "libz"
+assert _zlib._name, "Can't find libz"
 
 class _z_stream(C.Structure):
     _fields_ = [
@@ -56,7 +56,7 @@ class _z_stream(C.Structure):
     ]
 
 # TODO: get zlib version with ctypes
-ZLIB_VERSION = C.c_char_p("1.2.3")
+ZLIB_VERSION = C.c_char_p("1.2.3") # latest version as of 1-aug-2013: "1.2.8"
 Z_NULL = 0x00
 Z_OK = 0x00
 Z_STREAM_END = 0x01
@@ -68,13 +68,15 @@ Z_SYNC_FLUSH = 0x02
 Z_FULL_FLUSH = 0x03
 Z_FINISH = 0x04
 
+Z_DEFAULT_COMPRESSION = -0x01
+WINDOW_BITS = 15
 CHUNK = 1024 * 128  # FIXME: need to be smarter than this.
 
 class Compressor:
-    def __init__(self, level=-1, dictionary=None):
+    def __init__(self, level=Z_DEFAULT_COMPRESSION, dictionary=None):
         self.level = level
         self.st = _z_stream()
-        err = _zlib.deflateInit(C.byref(self.st), self.level, ZLIB_VERSION, C.sizeof(self.st))
+        err = _zlib.deflateInit_(C.byref(self.st), self.level, ZLIB_VERSION, C.sizeof(self.st))
         assert err == Z_OK, err # FIXME: specific error
         if dictionary:
             err = _zlib.deflateSetDictionary(
@@ -90,8 +92,9 @@ class Compressor:
         self.st.next_in   = C.cast(C.c_char_p(input), C.POINTER(C.c_ubyte))
         self.st.next_out  = C.cast(outbuf, C.POINTER(C.c_ubyte))
         self.st.avail_out = CHUNK
-        # FIXME (Alex Stef): err = _zlib.deflate(C.byref(self.st), Z_SYNC_FLUSH)
-        err = _zlib.deflate(C.byref(self.st), Z_FULL_FLUSH)
+        # ORIGINAL (mnot): err = _zlib.deflate(C.byref(self.st), Z_SYNC_FLUSH)
+        # BUGFIX (alex-stefa): err = _zlib.deflate(C.byref(self.st), Z_FULL_FLUSH)
+        err = _zlib.deflate(C.byref(self.st), Z_SYNC_FLUSH)
         if err in [Z_OK, Z_STREAM_END]:
             return outbuf[:CHUNK-self.st.avail_out]
         else:
@@ -106,7 +109,7 @@ class Decompressor:
     def __init__(self, dictionary=None):
         self.dictionary = dictionary
         self.st = _z_stream()
-        err = _zlib.inflateInit2(C.byref(self.st), 15, ZLIB_VERSION, C.sizeof(self.st))
+        err = _zlib.inflateInit2_(C.byref(self.st), WINDOW_BITS, ZLIB_VERSION, C.sizeof(self.st))
         assert err == Z_OK, err # FIXME: more specific error
 
     def __call__(self, input):

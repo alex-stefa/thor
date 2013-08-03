@@ -462,6 +462,8 @@ class SpdyServer(EventEmitter):
             spdy_session_class=SpdyServerSession,
             tcp_server_class=TcpServer):
         EventEmitter.__init__(self)
+        self._host = host
+        self._port = port
         self._idle_timeout = idle_timeout if idle_timeout > 0 else None
         self._spdy_session_class = spdy_session_class
         self._loop = loop or global_loop

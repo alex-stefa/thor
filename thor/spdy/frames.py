@@ -35,8 +35,7 @@ from thor.spdy import error
 
 compressed_hdrs = True
 try:
-    #import c_zlib
-    compressed_hdrs = False
+    import c_zlib
 except TypeError:
     # c_zlib loads "libz". However, that fails on Windows.
     compressed_hdrs = False
@@ -449,8 +448,11 @@ class DataFrame(SpdyFrame):
         self.data = data
         
     def __str__(self):
-        return SpdyFrame.__str__(self) + ' ID=%d LEN=%d]\n%s' % (
-            self.stream_id, len(self.data), self.data[:160])
+        return SpdyFrame.__str__(self) + ' ID=%d LEN=%d]%s%s' % (
+            self.stream_id, 
+            len(self.data), 
+            '\n' if len(self.data) > 0 else '',
+            self.data[:240])
         
     def serialize(self, context):
         # TODO: check that stream_id and data len don't overflow
