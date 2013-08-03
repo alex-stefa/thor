@@ -32,8 +32,8 @@ import sys
 import logging
 from urlparse import urlsplit, urlunsplit
 
-import thor
-from thor.events import EventEmitter, on
+from thor.loop import _loop as global_loop
+from thor.events import EventEmitter
 from thor.tcp import TcpServer
 from thor.spdy import error
 from thor.spdy.common import *
@@ -152,7 +152,7 @@ class SpdyServerSession(SpdySession):
         close()
     """
     def __init__(self, server, tcp_conn):
-        SpdySession.__init__(self, False, server._idle_timeout)
+        SpdySession.__init__(self, False, server._idle_timeout, server._loop)
         self.server = server
         self._write_queue = [[] for x in Priority.range]
         self._write_pending = False
@@ -311,7 +311,7 @@ class SpdyServerSession(SpdySession):
         
     def _schedule_write(self):
         if not self._write_pending:
-            thor.schedule(0, self._write_frame_callback)
+            self._loop.schedule(0, self._write_frame_callback)
             self._write_pending = True
 
     def _queue_frame(self, priority, frame):
@@ -452,8 +452,6 @@ class SpdyServer(EventEmitter):
     An asynchronous SPDY server.
     
     Event handlers that can be added:
-        start()
-        stop()
         session(session) -- a new SpdyServerSession connection has been accepted
     """
     def __init__(self,
@@ -466,9 +464,10 @@ class SpdyServer(EventEmitter):
         EventEmitter.__init__(self)
         self._idle_timeout = idle_timeout if idle_timeout > 0 else None
         self._spdy_session_class = spdy_session_class
-        self._tcp_server = tcp_server_class(host, port, loop=loop)
+        self._loop = loop or global_loop
+        self._loop.on('stop', self.shutdown)
+        self._tcp_server = tcp_server_class(host, port, loop=self._loop)
         self._tcp_server.on('connect', self._handle_conn)
-        thor.schedule(0, self.emit, 'start') # FIXME: does this work?
         
         # TODO:
         self.use_tls = False # TODO: SPDY over TLS
@@ -487,7 +486,6 @@ class SpdyServer(EventEmitter):
         Stop the server.
         """
         self._tcp_server.shutdown()
-        self.emit('stop')
         # TODO: close existing sessions? (we have no reference to them here..)
 
 #-------------------------------------------------------------------------------

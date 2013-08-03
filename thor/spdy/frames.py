@@ -647,7 +647,7 @@ class CredentialFrame(SpdyFrame): # TODO: add CREDENTIAL frame support
               
 #-------------------------------------------------------------------------------
 
-InputStates = enum('WAITING', 'READING_FRAME_DATA')
+InputStates = enum('INIT', 'WAITING', 'READING_FRAME_DATA')
     
 class SpdyMessageHandler(object):
     """
@@ -655,7 +655,7 @@ class SpdyMessageHandler(object):
     """
     def __init__(self):
         self._input_buffer = ""
-        self._input_state = InputStates.WAITING
+        self._input_state = InputStates.INIT
         self._input_frame_type = None
         self._input_flags = None
         self._input_stream_id = None
@@ -697,6 +697,19 @@ class SpdyMessageHandler(object):
         if self._input_buffer != "":
             data = self._input_buffer + data # will need to move to a list if writev comes around
             self._input_buffer = ""
+        if self._input_state == InputStates.INIT: # fresh state, no frames received so far
+            if len(data) < 2:
+                self._input_buffer = data
+                return
+            header = struct.unpack_from("!H", data)[0]
+            if not (header >> 15 & 0x01): # control frame bit
+                self._handle_error(error.ProtocolError(
+                    'First frame in SPDY session is not a control frame.'),
+                    GoawayReasons.PROTOCOL_ERROR, None, True)
+                return
+            self._input_frame_version = header & ((1 << 15) - 1)
+            if self._valid_frame_version(''):
+                self._input_state = InputStates.WAITING
         if self._input_state == InputStates.WAITING: # waiting for a complete frame header
             if len(data) >= 8:
                 (d1, self._input_flags, d2, d3) = struct.unpack_from("!IBBH", data)

@@ -32,8 +32,8 @@ import sys
 import logging
 from urlparse import urlsplit, urlunsplit
 
-import thor
-from thor.events import EventEmitter, on
+from thor.loop import _loop as global_loop
+from thor.events import EventEmitter
 from thor.tcp import TcpClient
 from thor.spdy import error
 from thor.spdy.common import *
@@ -140,7 +140,7 @@ class SpdyClientSession(SpdySession):
         close()
     """
     def __init__(self, client):
-        SpdySession.__init__(self, True, client._idle_timeout)
+        SpdySession.__init__(self, True, client._idle_timeout, client._loop)
         self.client = client
         self._read_timeout = client._read_timeout
         self._output_buffer = list()
@@ -305,7 +305,7 @@ class SpdyClientSession(SpdySession):
         Set the read timeout associated to entity.
         """
         if self._read_timeout > 0 and entity._read_timeout_ev is None:
-            entity._read_timeout_ev = self.client._loop.schedule(
+            entity._read_timeout_ev = self._loop.schedule(
                 self._read_timeout, 
                 self._handle_error, 
                 error.ReadTimeoutError(kind),
@@ -495,9 +495,9 @@ class SpdyClient(EventEmitter):
     An asynchronous SPDY client.
     """
     def __init__(self, 
-            connect_timeout=None, 
-            read_timeout=None, 
-            idle_timeout=None, 
+            connect_timeout=None, # seconds to wait for connect until throwing error
+            read_timeout=None, # seconds to wait for a response to request from server
+            idle_timeout=None, # seconds a conn is kept open until a frame is received
             loop=None, 
             spdy_session_class=SpdyClientSession, 
             tcp_client_class=TcpClient):
@@ -506,7 +506,7 @@ class SpdyClient(EventEmitter):
         self._read_timeout = read_timeout if read_timeout > 0 else None
         self._idle_timeout = idle_timeout if idle_timeout > 0 else None
         self._sessions = dict()
-        self._loop = loop or thor.loop._loop
+        self._loop = loop or global_loop
         self._loop.on('stop', self.shutdown)
         self._spdy_session_class = spdy_session_class
         self._tcp_client_class = tcp_client_class

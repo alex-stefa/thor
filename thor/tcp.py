@@ -264,7 +264,7 @@ class TcpServer(EventSource):
             # multiple processes listening
             return
         conn.setblocking(False)
-        tcp_conn = TcpConnection(conn, self.host, self.port, self._loop)
+        tcp_conn = TcpConnection(conn, addr[0], addr[1], self._loop)
         self.emit('connect', tcp_conn)
 
     # TODO: should loop stop close listening sockets?

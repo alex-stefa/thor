@@ -414,8 +414,7 @@ def make(precision=None):
         raise ImportError, "What is this thing, a Windows box?"
     return loop
 
-#_loop = make() # by default, just one big loop.
-_loop = PollLoop()
+_loop = make() # by default, just one big loop.
 run = _loop.run
 stop = _loop.stop
 schedule = _loop.schedule

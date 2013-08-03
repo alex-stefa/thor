@@ -34,7 +34,7 @@ import time
 from urlparse import urlunsplit
 from collections import defaultdict
 
-import thor
+from thor.loop import _loop as global_loop
 from thor.events import EventEmitter
 from thor.spdy import error
 from thor.spdy.frames import *
@@ -258,11 +258,12 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         error(err)
         close()
     """
-    def __init__(self, is_client, idle_timeout=None):
+    def __init__(self, is_client, idle_timeout=None, loop=None):
         SpdyMessageHandler.__init__(self)
         EventEmitter.__init__(self)
         self.exchanges = dict()
         self.tcp_conn = None
+        self._loop = loop or global_loop
         self._origin = (None, None) # (host, port)
         self._idle_timeout = idle_timeout
         self._idle_timeout_ev = None
@@ -460,7 +461,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         ping_timer._ping_timestamp = time.time()
         ping_timer._pong_timestamp = None
         if ping_timer._ping_timeout and ping_timer._ping_timeout_ev is None:
-            ping_timer._ping_timeout_ev = thor.schedule(
+            ping_timer._ping_timeout_ev = self._loop.schedule(
                 ping_timer._ping_timeout,
                 self._notify_ping, ping_timer._ping_id, False, False)
     
@@ -498,7 +499,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         Set the session idle timeout.
         """
         if self._idle_timeout > 0 and self._idle_timeout_ev is None:
-            self._idle_timeout_ev = thor.schedule(
+            self._idle_timeout_ev = self._loop.schedule(
                 self._idle_timeout,
                 self._handle_error,
                 error.IdleTimeoutError('No frame received for %d seconds.' 
