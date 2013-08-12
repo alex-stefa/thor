@@ -712,6 +712,8 @@ class SpdyMessageHandler(object):
             self._input_frame_version = header & ((1 << 15) - 1)
             if self._valid_frame_version(''):
                 self._input_state = InputStates.WAITING
+            else:
+                return
         if self._input_state == InputStates.WAITING: # waiting for a complete frame header
             if len(data) >= 8:
                 (d1, self._input_flags, d2, d3) = struct.unpack_from("!IBBH", data)

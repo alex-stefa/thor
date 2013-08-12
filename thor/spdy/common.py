@@ -459,7 +459,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
 
     ### Ping methods
 
-    def _send_ping(ping_timer):
+    def _send_ping(self, ping_timer):
         self._highest_ping_id += 2
         self._notify_ping(ping_timer._ping_id, cancel=True)
         ping_timer._ping_id = self._highest_ping_id
@@ -475,7 +475,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
                 ping_timer._ping_timeout,
                 self._notify_ping, ping_timer._ping_id, False, False)
     
-    def _notify_ping(ping_id, success=True, cancel=False):
+    def _notify_ping(self, ping_id, success=True, cancel=False):
         if ping_id is None:
             return
         try:
