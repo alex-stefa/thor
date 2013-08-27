@@ -10,7 +10,7 @@ SSL/TLS servers and clients.
 
 __author__ = "Mark Nottingham <mnot@mnot.net>"
 __copyright__ = """\
-Copyright (c) 2005-2013 Mark Nottingham
+Copyright (c) 2005-2013 Mark Nottingham, Alex Stefanescu
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -45,7 +45,10 @@ TcpConnection._block_errs.add(
 TcpConnection._close_errs.add((sys_ssl.SSLError, sys_ssl.SSL_ERROR_EOF))
 TcpConnection._close_errs.add((sys_ssl.SSLError, sys_ssl.SSL_ERROR_SSL))
 
-# TODO: TlsServer
+NPN_HTTP = ['http/1.1', 'http/1.0']
+NPN_SPDY = ['spdy/3']
+
+
 # TODO: expose cipher info, peer info
 
 class TlsClient(TcpClient):
@@ -68,7 +71,7 @@ class TlsClient(TcpClient):
     conn_handler will be called with the tcp_conn as the argument
     when the connection is made.
     """
-    def __init__(self, loop=None):
+    def __init__(self, npn_prot=NPN_HTTP, loop=None):
         TcpClient.__init__(self, loop)
         # FIXME: CAs
         self.sock = sys_ssl.wrap_socket(
@@ -76,12 +79,13 @@ class TlsClient(TcpClient):
             cert_reqs=sys_ssl.CERT_NONE,
             do_handshake_on_connect=False
         )
+        self.sock.context.set_npn_protocols(npn_prot)
 
     def handshake(self):
         try:
             self.sock.do_handshake()
             self.once('writable', self.handle_connect)
-        except sys_ssl.SSLError, why:
+        except sys_ssl.SSLError as why:
             if why[0] == sys_ssl.SSL_ERROR_WANT_READ:
 #                self.once('readable', self.handshake)
                 self.once('writable', self.handshake) # Oh, Linux...
@@ -89,7 +93,7 @@ class TlsClient(TcpClient):
                 self.once('writable', self.handshake)
             else:
                 self.handle_conn_error(sys_ssl.SSLError, why)
-        except socket.error, why:
+        except socket.error as why:
             self.handle_conn_error(socket.error, why)
 
     # TODO: refactor into tcp.py
@@ -105,10 +109,10 @@ class TlsClient(TcpClient):
         # TODO: use socket.getaddrinfo(); needs to be non-blocking.
         try:
             err = self.sock.connect_ex((host, port))
-        except socket.gaierror, why:
+        except socket.gaierror as why:
             self.handle_conn_error(socket.gaierror, why)
             return
-        except socket.error, why:
+        except socket.error as why:
             self.handle_conn_error(socket.error, why)
             return
         if err != errno.EINPROGRESS:
@@ -122,6 +126,42 @@ class TlsClient(TcpClient):
                 [errno.ETIMEDOUT, os.strerror(errno.ETIMEDOUT)],
                 True
             )
+            
+            
+class TlsServer(TcpServer):
+    """
+    An asynchronous SSL/TLS server.
+
+    Emits:
+      - connect (tcp_conn): upon connection
+
+    To start listening:
+
+    > s = TlsServer(host, port)
+    > s.on('connect', conn_handler)
+
+    conn_handler is called every time a new client connects.
+    """
+    def __init__(self, host, port, certfile, keyfile, npn_prot=NPN_HTTP, sock=None, loop=None):
+        TcpServer.__init__(self, host, port, sock, loop)
+        self.certfile = certfile
+        self.keyfile = keyfile
+        self.npn_prot = npn_prot
+
+    def handle_accept(self):
+        try:
+            conn, addr = self.sock.accept()
+        except (TypeError, IndexError):
+            # sometimes accept() returns None if we have
+            # multiple processes listening
+            return
+        conn.setblocking(False)
+        tcp_conn = TcpConnection(conn, addr[0], addr[1], self._loop)
+        self.emit('connect', tcp_conn)
+
+         
+            
+            
 
 def monkey_patch_ssl():
     """
@@ -169,7 +209,7 @@ if __name__ == "__main__":
         conn.on('data', sys.stdout.write)
         conn.write("GET / HTTP/1.1\r\nHost: %s\r\n\r\n" % test_host)
         conn.pause(False)
-        print conn.socket.cipher()
+        print('conn cipher: %s' % conn.socket.cipher())
 
     c = TlsClient()
     c.on('connect', go)

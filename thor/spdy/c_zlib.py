@@ -58,7 +58,7 @@ class _z_stream(C.Structure):
     ]
 
 # TODO: get zlib version with ctypes
-ZLIB_VERSION = C.c_char_p("1.2.3") # latest version as of 1-aug-2013: "1.2.8"
+ZLIB_VERSION = C.c_char_p(b"1.2.3") # latest version as of 1-aug-2013: "1.2.8"
 Z_NULL = 0x00
 Z_OK = 0x00
 Z_STREAM_END = 0x01
@@ -100,7 +100,7 @@ class Compressor:
         if err in [Z_OK, Z_STREAM_END]:
             return outbuf[:CHUNK-self.st.avail_out]
         else:
-            raise AssertionError, err # FIXME: more specific errors?
+            raise AssertionError(err) # FIXME: more specific errors?
 
     def __del__(self):
         err = _zlib.deflateEnd(C.byref(self.st))
@@ -124,7 +124,7 @@ class Decompressor:
         if err == Z_NEED_DICT:
             assert self.dictionary, "no dictionary provided"  # FIXME: more specific error
             dict_id = _zlib.adler32(
-                0L,
+                0,
                 C.cast(C.c_char_p(self.dictionary), C.POINTER(C.c_ubyte)),
                 len(self.dictionary)
             )
@@ -139,7 +139,7 @@ class Decompressor:
         if err in [Z_OK, Z_STREAM_END]:
             return outbuf[:CHUNK-self.st.avail_out]
         else:
-            raise AssertionError, err # FIXME: more specific error
+            raise AssertionError(err) # FIXME: more specific error
 
     def __del__(self):
         err = _zlib.inflateEnd(C.byref(self.st))

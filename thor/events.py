@@ -96,7 +96,7 @@ class EventEmitter(object):
         """
         Return a list of events being listened for.
         """
-        return self.__events.keys()
+        return list(self.__events.keys())
 
     def emit(self, event, *args):
         """

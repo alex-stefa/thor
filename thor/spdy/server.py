@@ -30,7 +30,7 @@ THE SOFTWARE.
 import os
 import sys
 import logging
-from urlparse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from thor.loop import _loop as global_loop
 from thor.events import EventEmitter
@@ -282,7 +282,7 @@ class SpdyServerSession(SpdySession):
                 DataFrame(
                     Flags.FLAG_FIN,
                     exchange.stream_id, 
-                    ''))
+                    b''))
             exchange._res_state = ExchangeStates.DONE
 
     ### Output-related method called by common.SpdySession

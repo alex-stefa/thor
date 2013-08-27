@@ -33,19 +33,21 @@ from collections import defaultdict
 
 from thor.spdy import error
 
+from . import c_zlib
 compressed_hdrs = True
 try:
-    import c_zlib
+    #from . import c_zlib
+    pass
 except TypeError:
     # c_zlib loads "libz". However, that fails on Windows.
     compressed_hdrs = False
     import sys
-    print >>sys.stderr, ('WARNING: sdpy_common: import c_zlib failed. '
-                         'Using uncompressed headers.')
+    print(('WARNING: sdpy_common: import c_zlib failed. '
+                         'Using uncompressed headers.'), file=sys.stderr)
 
 #-------------------------------------------------------------------------------
 
-_dictionary_chars = [
+dictionary = bytes([
 	0x00, 0x00, 0x00, 0x07, 0x6f, 0x70, 0x74, 0x69,   # - - - - o p t i
 	0x6f, 0x6e, 0x73, 0x00, 0x00, 0x00, 0x04, 0x68,   # o n s - - - - h
 	0x65, 0x61, 0x64, 0x00, 0x00, 0x00, 0x04, 0x70,   # e a d - - - - p
@@ -224,8 +226,7 @@ _dictionary_chars = [
 	0x73, 0x6f, 0x2d, 0x38, 0x38, 0x35, 0x39, 0x2d,   # s o - 8 8 5 9 -
 	0x31, 0x2c, 0x75, 0x74, 0x66, 0x2d, 0x2c, 0x2a,   # 1 - u t f - - -
 	0x2c, 0x65, 0x6e, 0x71, 0x3d, 0x30, 0x2e          # - e n q - 0 -
-]
-dictionary = ''.join([chr(c) for c in _dictionary_chars])
+])
 
 #-------------------------------------------------------------------------------
 
@@ -265,8 +266,8 @@ def enum(*sequential, **named):
         Numbers.keys
         >> ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE']
     """
-    enums = dict(zip(sequential, range(len(sequential))), **named)
-    reverse = dict((value, key) for key, value in enums.iteritems())
+    enums = dict(list(zip(sequential, list(range(len(sequential))))), **named)
+    reverse = dict((value, key) for key, value in enums.items())
     enums['str'] = reverse
     enums['values'] = reverse.keys()
     enums['keys'] = reverse.values()
@@ -376,7 +377,7 @@ SettingsIDs = enum(
 Priority = enum(
     MIN = 7,
     MAX = 0,
-    range = xrange(0, 8), # FIXME: replace with range(..) if Python 3.x
+    range = range(0, 8),
     count = 8)    
 
 SPDY_VERSION = 3
@@ -424,8 +425,10 @@ class SpdyFrame(object):
         args = [len(hdr_tuples)]
         for (n, v) in hdr_tuples:
             # TODO: check for overflowing n, v lengths
-            fmt.append("I%dsI%ds" % (len(n), len(v)))
-            args.extend([len(n), str(n), len(v), str(v)])
+            n_bytes = n.encode()
+            v_bytes = v.encode()
+            fmt.append("I%dsI%ds" % (len(n_bytes), len(v_bytes)))
+            args.extend([len(n_bytes), n_bytes, len(v_bytes), v_bytes])
         return struct.pack("".join(fmt), *args)
         
     @staticmethod
@@ -448,11 +451,12 @@ class DataFrame(SpdyFrame):
         self.data = data
         
     def __str__(self):
+        preview_len = 240
         return SpdyFrame.__str__(self) + ' ID=%d LEN=%d]%s%s' % (
             self.stream_id, 
             len(self.data), 
             '\n' if len(self.data) > 0 else '',
-            self.data[:240])
+            bytes(self.data[:preview_len]).decode(errors='ignore'))
         
     def serialize(self, context):
         # TODO: check that stream_id and data len don't overflow
@@ -644,7 +648,7 @@ class CredentialFrame(SpdyFrame): # TODO: add CREDENTIAL frame support
         return SpdyFrame.__str__(self) + ']'
 
     def serialize(self, context):
-        data = ''
+        data = bytes()
         return self._serialize_control_frame(self.type, self.flags, data)
               
 #-------------------------------------------------------------------------------
@@ -656,7 +660,7 @@ class SpdyMessageHandler(object):
     This is a base class for parsing SPDY frames.
     """
     def __init__(self):
-        self._input_buffer = ""
+        self._input_buffer = bytes()
         self._input_state = InputStates.INIT
         self._input_frame_type = None
         self._input_flags = None
@@ -696,9 +700,9 @@ class SpdyMessageHandler(object):
         making the appropriate calls.
         """
         # TODO: look into reading/writing directly from the socket buffer with struct.pack_into / unpack_from.
-        if self._input_buffer != "":
+        if len(self._input_buffer) > 0:
             data = self._input_buffer + data # will need to move to a list if writev comes around
-            self._input_buffer = ""
+            self._input_buffer = bytes()
         if self._input_state == InputStates.INIT: # fresh state, no frames received so far
             if len(data) < 2:
                 self._input_buffer = data
@@ -710,7 +714,7 @@ class SpdyMessageHandler(object):
                     GoawayReasons.PROTOCOL_ERROR, None, True)
                 return
             self._input_frame_version = header & ((1 << 15) - 1)
-            if self._valid_frame_version(''):
+            if self._valid_frame_version(b''):
                 self._input_state = InputStates.WAITING
             else:
                 return
@@ -853,7 +857,17 @@ class SpdyMessageHandler(object):
                         StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 cursor += 4
-                name = data[cursor:cursor+name_len]
+                name_bytes = data[cursor:cursor+name_len]
+                """
+                Try converting to utf-8 string.
+                """
+                try:
+                    name = name_bytes.decode()
+                except UnicodeError as err:
+                    self._handle_error(error.HeaderError(
+                        'Could not decode header name: %s.' % err),
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
+                    return None
                 """
                 Header names are encoded using the US-ASCII character set 
                 and must be all lower case.
@@ -893,7 +907,17 @@ class SpdyMessageHandler(object):
                         StatusCodes.PROTOCOL_ERROR, stream_id, True)
                     return None
                 cursor += 4
-                value = data[cursor:cursor+val_len]
+                value_bytes = data[cursor:cursor+val_len]
+                """
+                Try converting to utf-8 string.
+                """
+                try:
+                    value = value_bytes.decode()
+                except UnicodeError as err:
+                    self._handle_error(error.HeaderError(
+                        'Could not decode header value: %s.' % err),
+                        StatusCodes.PROTOCOL_ERROR, stream_id, True)
+                    return None
                 """
                 A header value can either be empty (e.g. the length is zero) or 
                 it can contain multiple, NUL-separated values, each with length 

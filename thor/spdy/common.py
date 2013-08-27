@@ -31,7 +31,7 @@ THE SOFTWARE.
 """
 
 import time
-from urlparse import urlunsplit
+from urllib.parse import urlunsplit
 from collections import defaultdict
 
 from thor.loop import _loop as global_loop
@@ -381,7 +381,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self.tcp_conn.on('pause', self._handle_pause)
         self._clear_idle_timeout()
         self._set_idle_timeout()
-        self._output('') # kick the output buffer
+        self._output(b'') # kick the output buffer
         # FIXME: is the above call necessary and should we wait for when we need to send data first?
         self.tcp_conn.pause(False)
         self.emit('bound', tcp_conn)
@@ -391,7 +391,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         The remote side closed the connection.
         """
         if self._input_buffer:
-            self._handle_input('')
+            self._handle_input(b'')
         self._handle_error(error.ConnectionClosedError(
             'Remote endpoint has closed the connection.'))
         # TODO: what if conn closed while in the middle of reading frame data?

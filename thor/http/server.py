@@ -112,7 +112,7 @@ class HttpServerConnection(HttpMessageHandler, EventEmitter):
     # Methods called by common.HttpRequestHandler
 
     def output(self, data):
-        self.tcp_conn.write(data)
+        self.tcp_conn.write(data.encode())
 
     def input_start(self, top_line, hdr_tuples, conn_tokens,
         transfer_codes, content_length):
@@ -259,18 +259,18 @@ class HttpServerExchange(EventEmitter):
 def test_handler(x):
     @on(x, 'request_start')
     def go(*args):
-        print "start: %s on %s" % (str(args[1]), id(x.http_conn))
+        print("start: %s on %s" % (str(args[1]), id(x.http_conn)))
         x.response_start(200, "OK", [])
         x.response_body('foo!')
         x.response_done([])
 
     @on(x, 'request_body')
     def body(chunk):
-        print "body: %s" % chunk
+        print("body: %s" % chunk)
 
     @on(x, 'request_done')
     def done(trailers):
-        print "done: %s" % str(trailers)
+        print("done: %s" % str(trailers))
 
 
 if __name__ == "__main__":

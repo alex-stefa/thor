@@ -35,7 +35,7 @@ THE SOFTWARE.
 """
 
 from collections import defaultdict
-from urlparse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from thor.events import EventEmitter, on
 from thor.tcp import TcpClient
@@ -144,7 +144,7 @@ class HttpClient(object):
         elif scheme == 'https':
             tcp_client = self.tls_client_class(self.loop)
         else:
-            raise ValueError, 'unknown scheme %s' % scheme
+            raise ValueError('unknown scheme %s' % scheme)
         tcp_client.on('connect', handle_connect)
         tcp_client.on('connect_error', handle_error)
         self._conn_counts[origin] += 1
@@ -432,9 +432,9 @@ class HttpClientExchange(HttpMessageHandler, EventEmitter):
         self.client._dead_conn(self.origin)
 
     def output(self, chunk):
-        self._output_buffer.append(chunk)
+        self._output_buffer.append(chunk.encode())
         if self.tcp_conn and self.tcp_conn.tcp_connected:
-            self.tcp_conn.write("".join(self._output_buffer))
+            self.tcp_conn.write(b"".join(self._output_buffer))
             self._output_buffer = []
 
     # misc
@@ -464,9 +464,9 @@ def test_client(request_uri, out, err):
     @on(x)
     def response_start(status, phrase, headers):
         "Print the response headers."
-        print "HTTP/%s %s %s" % (x.res_version, status, phrase)
-        print "\n".join(["%s:%s" % header for header in headers])
-        print
+        print("HTTP/%s %s %s" % (x.res_version, status, phrase))
+        print("\n".join(["%s:%s" % header for header in headers]))
+        print()
 
     @on(x)
     def error(err_msg):

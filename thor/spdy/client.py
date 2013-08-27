@@ -30,7 +30,7 @@ THE SOFTWARE.
 import os
 import sys
 import logging
-from urlparse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from thor.loop import _loop as global_loop
 from thor.events import EventEmitter
@@ -265,7 +265,7 @@ class SpdyClientSession(SpdySession):
                 DataFrame(
                     Flags.FLAG_FIN,
                     exchange.stream_id, 
-                    ''))
+                    b''))
             exchange._req_state = ExchangeStates.DONE
             self._set_read_timeout(exchange, 'start')
                     
@@ -279,7 +279,7 @@ class SpdyClientSession(SpdySession):
     def _output(self, chunk):
         self._output_buffer.append(chunk)
         if self.tcp_conn and self.tcp_conn.tcp_connected:
-            self.tcp_conn.write(''.join(self._output_buffer))
+            self.tcp_conn.write(b''.join(self._output_buffer))
             self._output_buffer = []
 
     ### TCP handling methods
@@ -304,7 +304,7 @@ class SpdyClientSession(SpdySession):
         """
         Set the read timeout associated to entity.
         """
-        if self._read_timeout > 0 and entity._read_timeout_ev is None:
+        if self._read_timeout and entity._read_timeout_ev is None:
             entity._read_timeout_ev = self._loop.schedule(
                 self._read_timeout, 
                 self._handle_error, 
@@ -502,9 +502,9 @@ class SpdyClient(EventEmitter):
             spdy_session_class=SpdyClientSession, 
             tcp_client_class=TcpClient):
         EventEmitter.__init__(self)
-        self._connect_timeout = connect_timeout if connect_timeout > 0 else None
-        self._read_timeout = read_timeout if read_timeout > 0 else None
-        self._idle_timeout = idle_timeout if idle_timeout > 0 else None
+        self._connect_timeout = connect_timeout if int(connect_timeout or 0) > 0 else None
+        self._read_timeout = read_timeout if int(read_timeout or 0) > 0 else None
+        self._idle_timeout = idle_timeout if int(idle_timeout or 0) > 0 else None
         self._sessions = dict()
         self._loop = loop or global_loop
         self._loop.on('stop', self.shutdown)

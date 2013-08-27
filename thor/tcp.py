@@ -150,7 +150,7 @@ class TcpConnection(EventSource):
         try:
             # TODO: look into recv_into (but see python issue7827)
             data = self.socket.recv(self.read_bufsize)
-        except Exception, why:
+        except Exception as why:
             err = (type(why), why[0])
             if err in self._block_errs:
                 return
@@ -169,10 +169,10 @@ class TcpConnection(EventSource):
     def handle_write(self):
         "The connection is ready for writing; write any buffered data."
         if len(self._write_buffer) > 0:
-            data = "".join(self._write_buffer)
+            data = b"".join(self._write_buffer)
             try:
                 sent = self.socket.send(data)
-            except Exception, why:
+            except Exception as why:
                 err = (type(why), why[0])
                 if err in self._block_errs:
                     return
@@ -335,10 +335,10 @@ class TcpClient(EventSource):
         # TODO: use socket.getaddrinfo(); needs to be non-blocking.
         try:
             err = self.sock.connect_ex((host, port))
-        except socket.gaierror, why:
+        except socket.gaierror as why:
             self.handle_conn_error(socket.gaierror, why)
             return
-        except socket.error, why:
+        except socket.error as why:
             self.handle_conn_error(socket.error, why)
             return
         if err != errno.EINPROGRESS:

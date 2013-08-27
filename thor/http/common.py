@@ -157,6 +157,7 @@ class HttpMessageHandler:
         Given a chunk of input, figure out what state we're in and handle it,
         making the appropriate calls.
         """
+        instr = instr.decode()
         if self._input_buffer != "":
             # will need to move to a list if writev comes around
             instr = self._input_buffer + instr
@@ -175,13 +176,13 @@ class HttpMessageHandler:
             try:
                 handler = getattr(self, '_handle_%s' % self._input_delimit)
             except AttributeError:
-                raise Exception, "Unknown input delimiter %s" % \
-                                 self._input_delimit
+                raise Exception("Unknown input delimiter %s" % \
+                                 self._input_delimit)
             handler(instr)
         elif self._input_state == ERROR:
             pass # I'm silently ignoring input that I don't understand.
         else:
-            raise Exception, "Unknown state %s" % self._input_state
+            raise Exception("Unknown state %s" % self._input_state)
 
     def _handle_nobody(self, instr):
         "Handle input that shouldn't have a body."
@@ -459,6 +460,6 @@ class HttpMessageHandler:
         elif self._output_delimit == None:
             pass # encountered an error before we found a delmiter
         else:
-            raise AssertionError, "Unknown request delimiter %s" % \
-                                  self._output_delimit
+            raise AssertionError("Unknown request delimiter %s" % \
+                                  self._output_delimit)
         self._output_state = WAITING
