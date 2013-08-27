@@ -663,4 +663,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         pass
         
     def _frame_window_update(self, frame):
+        # see: http://japhr.blogspot.ru/2012/05/spdy3-flow-control-comparisons.html
+        # see: https://groups.google.com/forum/#!msg/spdy-dev/JB_aQPNI7rw/10UFCLfeCxgJ
+    
         pass

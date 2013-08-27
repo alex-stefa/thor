@@ -37,7 +37,6 @@ THE SOFTWARE.
 from collections import defaultdict
 from urlparse import urlsplit, urlunsplit
 
-import thor
 from thor.events import EventEmitter, on
 from thor.tcp import TcpClient
 from thor.tls import TlsClient

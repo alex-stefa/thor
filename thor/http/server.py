@@ -37,7 +37,7 @@ THE SOFTWARE.
 import os
 import sys
 
-from thor import schedule
+from thor.loop import schedule
 from thor.events import EventEmitter, on
 from thor.tcp import TcpServer
 
