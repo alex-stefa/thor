@@ -35,6 +35,7 @@ from urllib.parse import urlsplit, urlunsplit
 from thor.loop import _loop as global_loop
 from thor.events import EventEmitter
 from thor.tcp import TcpClient
+from thor.tls import TlsClient, TlsConfig
 from thor.spdy import error
 from thor.spdy.common import *
 from thor.spdy.frames import *
@@ -485,35 +486,31 @@ class SpdyClientSession(SpdySession):
         
 #-------------------------------------------------------------------------------
 
-# TODO: figure out appropriate logging
 # TODO: proxy support
 # TODO: implement connect retry? 
-# TODO: spdy over tls (needs npn support)
 
 class SpdyClient(EventEmitter):
     """
     An asynchronous SPDY client.
     """
+    tcp_client_class = TcpClient
+    tls_client_class = TlsClient
+    spdy_session_class = SpdyClientSession
+    
     def __init__(self, 
             connect_timeout=None, # seconds to wait for connect until throwing error
             read_timeout=None, # seconds to wait for a response to request from server
             idle_timeout=None, # seconds a conn is kept open until a frame is received
-            loop=None, 
-            spdy_session_class=SpdyClientSession, 
-            tcp_client_class=TcpClient):
+            tls_config=None,
+            loop=None):
         EventEmitter.__init__(self)
         self._connect_timeout = connect_timeout if int(connect_timeout or 0) > 0 else None
         self._read_timeout = read_timeout if int(read_timeout or 0) > 0 else None
         self._idle_timeout = idle_timeout if int(idle_timeout or 0) > 0 else None
+        self._tls_config = tls_config
         self._sessions = dict()
         self._loop = loop or global_loop
         self._loop.on('stop', self.shutdown)
-        self._spdy_session_class = spdy_session_class
-        self._tcp_client_class = tcp_client_class
-
-        # TODO:
-        self.proxy = None
-        self.use_tls = False
 
     def session(self, origin):
         """
@@ -522,8 +519,11 @@ class SpdyClient(EventEmitter):
         try:
             session = self._sessions[origin]
         except KeyError:
-            session = self._spdy_session_class(self)
-            tcp_client = self._tcp_client_class(self._loop)
+            session = self.spdy_session_class(self)
+            if self._tls_config is None:
+                tcp_client = self.tcp_client_class(self._loop)
+            else:
+                tcp_client = self.tls_client_class(self._tls_config, self._loop)
             tcp_client.on('connect', session._bind)
             tcp_client.on('connect_error', session._handle_connect_error)
             (host, port) = origin # FIXME: add scheme?

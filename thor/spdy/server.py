@@ -35,6 +35,7 @@ from urllib.parse import urlsplit, urlunsplit
 from thor.loop import _loop as global_loop
 from thor.events import EventEmitter
 from thor.tcp import TcpServer
+from thor.tls import TlsServer, TlsConfig
 from thor.spdy import error
 from thor.spdy.common import *
 from thor.spdy.frames import *
@@ -443,8 +444,6 @@ class SpdyServerSession(SpdySession):
                 
 #-------------------------------------------------------------------------------
 
-# TODO: figure out appropriate logging
-# TODO: spdy over tls (needs npn support)
 # TODO: read timeout for receiving a complete request on a stream?
 
 class SpdyServer(EventEmitter):
@@ -453,35 +452,46 @@ class SpdyServer(EventEmitter):
     
     Event handlers that can be added:
         session(session) -- a new SpdyServerSession connection has been accepted
+        error(error) -- failed to accept incoming connection
     """
+    tcp_server_class = TcpServer
+    tls_server_class = TlsServer
+    spdy_session_class = SpdyServerSession
+
     def __init__(self,
             host='localhost',
             port=8080,
             idle_timeout=None, # seconds a conn is kept open until a frame is received
-            loop=None,
-            spdy_session_class=SpdyServerSession,
-            tcp_server_class=TcpServer):
+            tls_config=None,
+            loop=None):
         EventEmitter.__init__(self)
         self._host = host
         self._port = port
-        self._idle_timeout = idle_timeout if idle_timeout > 0 else None
-        self._spdy_session_class = spdy_session_class
+        self._idle_timeout = idle_timeout if int(idle_timeout or 0) > 0 else None
+        self._tls_config = tls_config
         self._loop = loop or global_loop
         self._loop.on('stop', self.shutdown)
-        self._tcp_server = tcp_server_class(host, port, loop=self._loop)
+        if tls_config is None:
+            self._tcp_server = self.tcp_server_class(
+                host, port, loop=self._loop)
+        else:
+            self._tcp_server = self.tls_server_class(
+                host, port, tls_config, loop=self._loop)
         self._tcp_server.on('connect', self._handle_conn)
-        
-        # TODO:
-        self.use_tls = False # TODO: SPDY over TLS
-        self.certfile = None
-        self.keyfile = None
- 
+        self._tcp_server.on('connect_error', self._handle_error)
+         
     def _handle_conn(self, tcp_conn):
         """
         Process a new client connection, tcp_conn.
         """
-        session = self._spdy_session_class(self, tcp_conn)
+        session = self.spdy_session_class(self, tcp_conn)
         self.emit('session', session)
+        
+    def _handle_error(self, err_type, err_id, err_str):
+        """
+        An error has occurred while accepting a new connection.
+        """
+        self.emit('error', error.ConnectError('%s: %s' % (err_type, err_str)))
         
     def shutdown(self):
         """

@@ -151,7 +151,7 @@ class TcpConnection(EventSource):
             # TODO: look into recv_into (but see python issue7827)
             data = self.socket.recv(self.read_bufsize)
         except Exception as why:
-            err = (type(why), why[0])
+            err = (type(why), why.args[0])
             if err in self._block_errs:
                 return
             elif err in self._close_errs:
@@ -173,7 +173,7 @@ class TcpConnection(EventSource):
             try:
                 sent = self.socket.send(data)
             except Exception as why:
-                err = (type(why), why[0])
+                err = (type(why), why.args[0])
                 if err in self._block_errs:
                     return
                 elif err in self._close_errs:
@@ -233,6 +233,7 @@ class TcpConnection(EventSource):
 
         # TODO: should loop stop automatically close all conns?
 
+        
 class TcpServer(EventSource):
     """
     An asynchronous TCP server.
@@ -264,8 +265,11 @@ class TcpServer(EventSource):
             # multiple processes listening
             return
         conn.setblocking(False)
-        tcp_conn = TcpConnection(conn, addr[0], addr[1], self._loop)
-        self.emit('connect', tcp_conn)
+        self.create_conn(conn, addr[0], addr[1])
+        
+    def create_conn(self, sock, host, port):
+        tcp_conn = TcpConnection(sock, host, port, self._loop)
+        self.emit('connect', tcp_conn)        
 
     # TODO: should loop stop close listening sockets?
 
@@ -322,7 +326,6 @@ class TcpClient(EventSource):
         self.register_fd(self.sock.fileno(), 'writable')
         self.event_add('error')
 
-
     def connect(self, host, port, connect_timeout=None):
         """
         Connect to host:port (with an optional connect timeout)
@@ -331,7 +334,7 @@ class TcpClient(EventSource):
         """
         self.host = host
         self.port = port
-        self.on('writable', self.handle_connect)
+        self.once('writable', self.handle_connect)
         # TODO: use socket.getaddrinfo(); needs to be non-blocking.
         try:
             err = self.sock.connect_ex((host, port))
@@ -350,9 +353,12 @@ class TcpClient(EventSource):
                 self.handle_conn_error,
                 socket.error,
                 [errno.ETIMEDOUT, os.strerror(errno.ETIMEDOUT)],
-                True
-            )
+                True)
 
+    def create_conn(self):
+        tcp_conn = TcpConnection(self.sock, self.host, self.port, self._loop)
+        self.emit('connect', tcp_conn)
+            
     def handle_connect(self):
         self.unregister_fd()
         if self._timeout_ev:
@@ -363,10 +369,7 @@ class TcpClient(EventSource):
         if err:
             self.handle_conn_error(socket.error, [err, os.strerror(err)])
         else:
-            tcp_conn = TcpConnection(
-                self.sock, self.host, self.port, self._loop
-            )
-            self.emit('connect', tcp_conn)
+            self.create_conn()
 
     def handle_conn_error(self, err_type=None, why=None, close=False):
         """
@@ -385,8 +388,8 @@ class TcpClient(EventSource):
             err_id = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             err_str = os.strerror(err_id)
         else:
-            err_id = why[0]
-            err_str = why[1]
+            err_id = why.args[0]
+            err_str = why.args[1]
         self._error_sent = True
         self.unregister_fd()
         self.emit('connect_error', err_type, err_id, err_str)

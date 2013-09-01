@@ -17,6 +17,7 @@ assert _hexversion > 0x03030000, \
 
 from thor.loop import run, stop, time, schedule, running
 from thor.tcp import TcpClient, TcpServer
+from thor.tls import TlsClient, TlsServer, TlsConfig
 from thor.udp import UdpEndpoint
 from thor.events import on
 from thor.http import HttpClient, HttpServer

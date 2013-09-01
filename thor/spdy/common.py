@@ -226,7 +226,7 @@ class PingTimer(EventEmitter):
     def __init__(self, session, ping_timeout):
         EventEmitter.__init__(self)
         self._session = session
-        self._ping_timeout = ping_timeout
+        self._ping_timeout = ping_timeout if int(ping_timeout or 0) > 0 else None
         self._ping_timeout_ev = None
         self._ping_id = None
         self._ping_timestamp = None
@@ -265,7 +265,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self.tcp_conn = None
         self._loop = loop or global_loop
         self._origin = None # (host, port)
-        self._idle_timeout = idle_timeout
+        self._idle_timeout = idle_timeout if int(idle_timeout or 0) > 0 else None
         self._idle_timeout_ev = None
         self._sent_goaway = False
         self._received_goaway = False
@@ -508,7 +508,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         """
         Set the session idle timeout.
         """
-        if self._idle_timeout > 0 and self._idle_timeout_ev is None:
+        if self._idle_timeout and self._idle_timeout_ev is None:
             self._idle_timeout_ev = self._loop.schedule(
                 self._idle_timeout,
                 self._handle_error,
