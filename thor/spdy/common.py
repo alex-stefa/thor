@@ -132,11 +132,22 @@ class HeaderDict(dict):
         except (IndexError, KeyError):
             return None
     @property
-    def host(self):
+    def authority(self):
         try:
             return self[':host'][-1]
         except (IndexError, KeyError):
             return None
+    @property
+    def host(self):
+        authority = self.authority
+        if authority is None:
+            return (None, None)
+        host = authority.partition('@')[0]
+        (hostname, colon, port) = host.partition(':')
+        try:
+            return (hostname, int(port))
+        except ValueError:
+            return (hostname, None)
     @property
     def version(self):
         try:
@@ -151,7 +162,7 @@ class HeaderDict(dict):
             return None
     @property
     def uri(self):
-        return urlunsplit((self.scheme, self.host, self.path, '', ''))
+        return urlunsplit((self.scheme, self.authority, self.path, '', ''))
     @property
     def status(self):
         try:

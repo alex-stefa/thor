@@ -240,7 +240,7 @@ class HttpServerExchange(EventEmitter):
             res_hdrs.append(("Connection", "close"))
 
         self.http_conn.output_start(
-            "HTTP/1.1 %s %s" % (status_code, status_phrase),
+            "HTTP/1.1 %s %s" % (str(status_code), status_phrase),
             res_hdrs, delimit
         )
 

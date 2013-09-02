@@ -63,7 +63,7 @@ class SpdyServerExchange(SpdyExchange):
         
     ### "Public" methods
    
-    def response_start(self, res_hdrs, status="200 OK", uri=None, done=False):
+    def response_start(self, res_hdrs, status=(200, 'OK'), uri=None, done=False):
         """
         Start a response to the request received by the exchange with specified 
         response status and headers as a list of (field_name, field_value). 
@@ -81,9 +81,9 @@ class SpdyServerExchange(SpdyExchange):
                 return
             (scheme, authority, path, query, fragment) = urlsplit(uri)
             scheme = scheme.lower()
-            if scheme != 'http':
+            if scheme not in ['http', 'https']:
                 self.emit('error', 
-                    error.UrlError('Only HTTP URLs are supported.'))
+                    error.UrlError('Only HTTP(S) URLs are supported.'))
                 return
             if '@' in authority:
                 userinfo, authority = authority.split('@', 1)
@@ -231,7 +231,8 @@ class SpdyServerSession(SpdySession):
             return
         res_hdrs = clean_headers(res_hdrs, res_remove_hdrs)
         # FIXME: is status necessary on pushed streams?
-        res_hdrs.append((':status', str(status) if status else ''))
+        str_status = str(status[0]) + ((' ' + status[1]) if status[1] else '')
+        res_hdrs.append((':status', str_status))
         res_hdrs.append((':version', 'HTTP/1.1'))
         fin_flag = Flags.FLAG_FIN if done else Flags.FLAG_NONE
         if exchange._pushed:

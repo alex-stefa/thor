@@ -77,8 +77,8 @@ class SpdyClientExchange(SpdyExchange):
         # TODO: find out where to connect to the hard way
         (scheme, authority, path, query, fragment) = urlsplit(uri)
         scheme = scheme.lower()
-        if scheme != 'http':
-            self.emit('error', error.UrlError('Only HTTP URLs are supported.'))
+        if scheme not in ['http', 'https']:
+            self.emit('error', error.UrlError('Only HTTP(S) URLs are supported.'))
             return
         if '@' in authority:
             userinfo, authority = authority.split('@', 1)

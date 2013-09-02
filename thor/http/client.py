@@ -39,7 +39,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from thor.events import EventEmitter, on
 from thor.tcp import TcpClient
-from thor.tls import TlsClient
+from thor.tls import TlsClient, TlsConfig
 
 from thor.http.common import HttpMessageHandler, \
     CLOSE, COUNTED, CHUNKED, NOBODY, \
@@ -70,6 +70,7 @@ class HttpClient(object):
         self.proxy_tls = False
         self.proxy_host = None
         self.proxy_port = None
+        self.tls_config = TlsConfig()
         self._idle_conns = defaultdict(list)
         self._conn_counts = defaultdict(int)
         self.loop.on('stop', self._close_conns)
@@ -142,7 +143,7 @@ class HttpClient(object):
         if scheme == 'http':
             tcp_client = self.tcp_client_class(self.loop)
         elif scheme == 'https':
-            tcp_client = self.tls_client_class(self.loop)
+            tcp_client = self.tls_client_class(self.tls_config, self.loop)
         else:
             raise ValueError('unknown scheme %s' % scheme)
         tcp_client.on('connect', handle_connect)

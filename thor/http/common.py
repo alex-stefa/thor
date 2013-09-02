@@ -157,7 +157,8 @@ class HttpMessageHandler:
         Given a chunk of input, figure out what state we're in and handle it,
         making the appropriate calls.
         """
-        instr = instr.decode()
+        if type(instr) == bytes: # convert to string
+            instr = instr.decode()
         if self._input_buffer != "":
             # will need to move to a list if writev comes around
             instr = self._input_buffer + instr
