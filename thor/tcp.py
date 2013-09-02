@@ -106,14 +106,18 @@ class TcpConnection(EventSource):
     write_bufsize = 16
     read_bufsize = 1024 * 16
 
-    _block_errs = set([(socket.error, e) for e in [
-        errno.EAGAIN, errno.EWOULDBLOCK, errno.ETIMEDOUT
-    ]])
-    _close_errs = set([(socket.error, e) for e in [
-        errno.EBADF, errno.ECONNRESET, errno.ESHUTDOWN,
-        errno.ECONNABORTED, errno.ECONNREFUSED,
-        errno.ENOTCONN, errno.EPIPE
-    ]])
+    _block_errs = set([
+        (BlockingIOError, errno.EAGAIN),
+        (BlockingIOError, errno.EWOULDBLOCK),
+        (TimeoutError, errno.ETIMEDOUT)])
+    _close_errs = set([
+        (OSError, errno.EBADF),
+        (OSError, errno.ENOTCONN),
+        (ConnectionResetError, errno.ECONNRESET),
+        (BrokenPipeError, errno.ESHUTDOWN),
+        (BrokenPipeError, errno.EPIPE),
+        (ConnectionAbortedError, errno.ECONNABORTED),
+        (ConnectionRefusedError, errno.ECONNREFUSED)])
 
     def __init__(self, sock, host, port, loop=None):
         EventSource.__init__(self, loop)
@@ -151,7 +155,7 @@ class TcpConnection(EventSource):
             # TODO: look into recv_into (but see python issue7827)
             data = self.socket.recv(self.read_bufsize)
         except Exception as why:
-            err = (type(why), why.args[0])
+            err = (type(why), why.errno)
             if err in self._block_errs:
                 return
             elif err in self._close_errs:
@@ -159,7 +163,7 @@ class TcpConnection(EventSource):
                 return
             else:
                 raise
-        if data == "":
+        if data == b'':
             self.emit('close')
         else:
             self.emit('data', data)
@@ -169,11 +173,11 @@ class TcpConnection(EventSource):
     def handle_write(self):
         "The connection is ready for writing; write any buffered data."
         if len(self._write_buffer) > 0:
-            data = b"".join(self._write_buffer)
+            data = b''.join(self._write_buffer)
             try:
-                sent = self.socket.send(data)
+                sent = self.socket.send(data) if len(data) > 0 else 0
             except Exception as why:
-                err = (type(why), why.args[0])
+                err = (type(why), why.errno)
                 if err in self._block_errs:
                     return
                 elif err in self._close_errs:
@@ -351,7 +355,7 @@ class TcpClient(EventSource):
             self._timeout_ev = self._loop.schedule(
                 connect_timeout,
                 self.handle_conn_error,
-                socket.error,
+                TimeoutError,
                 [errno.ETIMEDOUT, os.strerror(errno.ETIMEDOUT)],
                 True)
 
@@ -388,8 +392,8 @@ class TcpClient(EventSource):
             err_id = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             err_str = os.strerror(err_id)
         else:
-            err_id = why.args[0]
-            err_str = why.args[1]
+            err_id = why.errno
+            err_str = why.strerror
         self._error_sent = True
         self.unregister_fd()
         self.emit('connect_error', err_type, err_id, err_str)

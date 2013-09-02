@@ -41,15 +41,10 @@ from thor.loop import EventSource
 from thor.tcp import TcpServer, TcpClient, TcpConnection, server_listen
 
 
-TcpConnection._block_errs.add((sys_ssl.SSLError, sys_ssl.SSL_ERROR_WANT_READ))
-TcpConnection._block_errs.add(
-                        (sys_ssl.SSLError, sys_ssl.SSL_ERROR_WANT_WRITE)
-)
-TcpConnection._close_errs.add((sys_ssl.SSLError, sys_ssl.SSL_ERROR_EOF))
-TcpConnection._close_errs.add((sys_ssl.SSLError, sys_ssl.SSL_ERROR_SSL))
-
-NPN_HTTP = ['http/1.1', 'http/1.0']
-NPN_SPDY = ['spdy/3']
+TcpConnection._block_errs.add((sys_ssl.SSLWantReadError, sys_ssl.SSL_ERROR_WANT_READ))
+TcpConnection._block_errs.add((sys_ssl.SSLWantWriteError, sys_ssl.SSL_ERROR_WANT_WRITE))
+TcpConnection._close_errs.add((sys_ssl.SSLEOFError, sys_ssl.SSL_ERROR_EOF))
+TcpConnection._close_errs.add((sys_ssl.CertificateError, sys_ssl.SSL_ERROR_SSL)) 
 
 
 class TlsConfig():
@@ -88,6 +83,9 @@ class TlsConfig():
     
     see: http://docs.python.org/3.3/library/ssl.html#ssl-contexts
     """
+    NPN_HTTP = ['http/1.1', 'http/1.0']
+    NPN_SPDY = ['spdy/3']
+
     def __init__(self, 
         keyfile=None,
         certfile=None,
@@ -216,45 +214,45 @@ class TlsHandshake(EventSource):
         EventSource.__init__(self, loop)
         self.sock = sock
         self.tls_config = tls_config
-        self.on('error', self.handle_error)
+        self.on('error', self._handle_error)
         self.register_fd(self.sock.fileno(), 'writable')
         self.event_add('error')       
-        self.once('writable', self.handshake)
-        
+    
     def handshake(self):
+        self.once('writable', self._handshake)
+        
+    def _handshake(self):
         try:
             self.sock.do_handshake()
-            self.once('writable', self.handle_complete)
+            self.once('writable', self._handle_complete)
+        except sys_ssl.SSLWantReadError:
+            # self.once('readable', self.handshake)
+            self.once('writable', self._handshake) # Oh, Linux...
+        except sys_ssl.SSLWantWriteError:
+            self.once('writable', self._handshake)
         except sys_ssl.SSLError as why:
-            if why.args[0] == sys_ssl.SSL_ERROR_WANT_READ:
-#                self.once('readable', self.handshake)
-                self.once('writable', self.handshake) # Oh, Linux...
-            elif why.args[0] == sys_ssl.SSL_ERROR_WANT_WRITE:
-                self.once('writable', self.handshake)
-            else:
-                self.handle_error(sys_ssl.SSLError, why)
+            self._handle_error(sys_ssl.SSLError, why)
         except socket.error as why:
-            self.handle_error(socket.error, why)
+            self._handle_error(socket.error, why)
 
-    def handle_complete(self):
+    def _handle_complete(self):
         self.unregister_fd()
         if self.tls_config.npn_prot and not self.sock.selected_npn_protocol():
             self.sock.close()
             self.emit('handshake_error', sys_ssl.SSLError, None,
                 'NPN not supported by remote side or unknown protocol')
         else:
-            print(self.sock.selected_npn_protocol())
             self.emit('success')
             
-    def handle_error(self, err_type, why):
+    def _handle_error(self, err_type, why):
         self.unregister_fd()
         if err_type is None:
             err_type = socket.error
             err_id = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             err_str = os.strerror(err_id)
         else:
-            err_id = why.args[0]
-            err_str = why.args[1]
+            err_id = why.errno
+            err_str = why.strerror
         self.sock.close()
         self.emit('handshake_error', err_type, err_id, err_str)
                      

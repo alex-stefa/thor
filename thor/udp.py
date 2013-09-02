@@ -51,9 +51,7 @@ class UdpEndpoint(EventSource):
     > s.on('datagram', datagram_handler)
     """
     recv_buffer = 8192
-    _block_errs = set([
-        errno.EAGAIN, errno.EWOULDBLOCK
-    ])
+    _block_errs = set([errno.EAGAIN, errno.EWOULDBLOCK])
 
     def __init__(self, loop=None):
         EventSource.__init__(self, loop)
@@ -94,7 +92,7 @@ class UdpEndpoint(EventSource):
         try:
             self.sock.sendto(datagram, (host, port))
         except socket.error as why:
-            if why[0] in self._block_errs:
+            if why.errno in self._block_errs:
                 pass # we drop these on the floor. It's UDP, after all.
             else:
                 raise
@@ -107,7 +105,7 @@ class UdpEndpoint(EventSource):
             try:
                 data, addr = self.sock.recvfrom(self.recv_buffer)
             except socket.error as why:
-                if why[0] in self._block_errs:
+                if why.errno in self._block_errs:
                     break
                 else:
                     raise

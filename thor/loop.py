@@ -210,7 +210,11 @@ class LoopBase(EventEmitter):
         cb.__name__ = callback.__name__
         new_event = (self.time() + delta, cb)
         events = self.__sched_events
-        bisect.insort(events, new_event)
+        try: 
+            bisect.insort(events, new_event) # FIXME: error when events with identical timestamps
+        except TypeError:
+            events.append(new_event)
+            events.sort(key=lambda x:x[0])
         class event_holder:
             def __init__(self):
                 self._deleted = False
