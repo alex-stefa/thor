@@ -41,10 +41,13 @@ from thor.loop import EventSource
 from thor.tcp import TcpServer, TcpClient, TcpConnection, server_listen
 
 
-TcpConnection._block_errs.add((sys_ssl.SSLWantReadError, sys_ssl.SSL_ERROR_WANT_READ))
-TcpConnection._block_errs.add((sys_ssl.SSLWantWriteError, sys_ssl.SSL_ERROR_WANT_WRITE))
-TcpConnection._close_errs.add((sys_ssl.SSLEOFError, sys_ssl.SSL_ERROR_EOF))
-TcpConnection._close_errs.add((sys_ssl.SSLError, sys_ssl.SSL_ERROR_SSL)) 
+TcpConnection._block_errs.update([
+    (sys_ssl.SSLWantReadError, sys_ssl.SSL_ERROR_WANT_READ),
+    (sys_ssl.SSLWantWriteError, sys_ssl.SSL_ERROR_WANT_WRITE)])
+TcpConnection._close_errs.update([
+    (sys_ssl.SSLEOFError, sys_ssl.SSL_ERROR_EOF),
+    (sys_ssl.SSLZeroReturnError, sys_ssl.SSL_ERROR_ZERO_RETURN),
+    (sys_ssl.SSLError, sys_ssl.SSL_ERROR_SSL)])
 
 
 class TlsConfig():
