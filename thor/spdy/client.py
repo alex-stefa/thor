@@ -121,10 +121,10 @@ class SpdyClientExchange(SpdyExchange):
         the SPDY stream associated to this exchange should be cancelled.
         """
         self.session._close_exchange(self, StatusCodes.CANCEL)
-        for exchange in self.session.exchanges.values():
-            if (exchange._pushed and 
-                exchange._stream_assoc_id == self.stream_id):
-                    self.session._close_exchange(exchange)
+        for e in self.session.exchanges.values():
+            if (e._pushed and 
+                e._stream_assoc_id == self.stream_id):
+                    self.session._close_exchange(e)
 
 #-------------------------------------------------------------------------------
 
@@ -135,6 +135,7 @@ class SpdyClientSession(SpdySession):
     Event handlers that can be added:
         bound(tcp_conn)
         frame(frame)
+        output(frame)
         goaway(reason, last_stream_id)
         pause(paused)
         error(err)
@@ -272,9 +273,7 @@ class SpdyClientSession(SpdySession):
                     
     ### Output-related methods called by common.SpdySession
 
-    def _queue_frame(self, priority, frame):
-        self._clear_idle_timeout()
-        self._set_idle_timeout()
+    def _queue_frame_do(self, priority, frame):
         self._output(frame.serialize(self))
 
     def _output(self, chunk):

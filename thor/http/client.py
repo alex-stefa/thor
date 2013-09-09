@@ -40,7 +40,6 @@ from urllib.parse import urlsplit, urlunsplit
 from thor.events import EventEmitter, on
 from thor.tcp import TcpClient
 from thor.tls import TlsClient, TlsConfig
-
 from thor.http.common import HttpMessageHandler, \
     CLOSE, COUNTED, CHUNKED, NOBODY, \
     WAITING, ERROR, \
@@ -59,7 +58,7 @@ class HttpClient(object):
     tcp_client_class = TcpClient
     tls_client_class = TlsClient
 
-    def __init__(self, loop=None):
+    def __init__(self, loop=None, tls_config=None):
         self.loop = loop or thor.loop._loop
         self.idle_timeout = 60 # in seconds
         self.connect_timeout = None
@@ -70,7 +69,7 @@ class HttpClient(object):
         self.proxy_tls = False
         self.proxy_host = None
         self.proxy_port = None
-        self.tls_config = TlsConfig()
+        self.tls_config = tls_config or TlsConfig()
         self._idle_conns = defaultdict(list)
         self._conn_counts = defaultdict(int)
         self.loop.on('stop', self._close_conns)
@@ -271,7 +270,6 @@ class HttpClientExchange(HttpMessageHandler, EventEmitter):
         self.output_start("%s %s HTTP/1.1" % (self.method, self.req_target),
             req_hdrs, delimit
         )
-
 
     def request_body(self, chunk):
         "Send part of the request body. May be called zero to many times."

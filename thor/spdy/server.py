@@ -147,6 +147,7 @@ class SpdyServerSession(SpdySession):
         exchange(exchange) -- a new SpdyServerExchange request has been received
         bound(tcp_conn)
         frame(frame)
+        output(frame)
         goaway(reason, last_stream_id)
         pause(paused)
         error(err)
@@ -316,10 +317,8 @@ class SpdyServerSession(SpdySession):
             self._loop.schedule(0, self._write_frame_callback)
             self._write_pending = True
 
-    def _queue_frame(self, priority, frame):
+    def _queue_frame_do(self, priority, frame):
         self._output_paused = False
-        self._clear_idle_timeout()
-        self._set_idle_timeout()
         self._write_queue[priority].append(frame)
         self._schedule_write()
 
@@ -430,10 +429,10 @@ class SpdyServerSession(SpdySession):
         """
         # FIXME: looping like this can take too much time
         if frame.status == StatusCodes.CANCEL:
-            for exchange in self.exchanges.values():
-                if (exchange._pushed and 
-                    exchange._stream_assoc_id == frame.stream_id):
-                    self._close_exchange(exchange)
+            for e in self.exchanges.values():
+                if (e._pushed and 
+                    e._stream_assoc_id == frame.stream_id):
+                    self._close_exchange(e)
         exchange.emit('error', error.RstStreamError(
             'Status code %s' % StatusCodes.str[frame.status]))
         
@@ -492,7 +491,8 @@ class SpdyServer(EventEmitter):
         """
         An error has occurred while accepting a new connection.
         """
-        self.emit('error', error.ConnectError('%s: %s' % (err_type, err_str)))
+        self.emit('error', error.ConnectError('%s: %s' % 
+            (err_type.__qualname__, err_str)))
         
     def shutdown(self):
         """

@@ -27,77 +27,89 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-class SpdyError(Exception):
-    desc = "Unknown Error"
+from thor.enum import enum
 
-    def __init__(self, detail=None):
+Errnos = enum(
+    'ESPDY', # Generic SPDY error
+    'E'
+    
+
+)
+
+
+
+class SpdyError(Exception):
+    desc = 'Unknown Error'
+    _errnos = set([Errnos.ESPDY])
+
+    def __init__(self, detail=None, errno=Errnos.ESPDY):
         Exception.__init__(self)
         self.detail = detail
+        self.errno = errno if errno in self._errnos else Errnos.ESPDY
+        self.strerror = '[%s] %s%s' % (
+            Errnos.str[self.errno],
+            self.desc,
+            (': ' + str(self.detail)) if self.detail else '')
+
 
     def __repr__(self):
-        status = [self.__class__.__module__ + "." + self.__class__.__name__]
-        if self.detail:
-            status.append(self.desc + ": " + self.detail)
-        else:
-            status.append(self.desc)
-        return "<%s at %#x>" % (", ".join(status), id(self))
+        status = [self.__class__.__module__ + '.' + self.__class__.__name__,
+            self.strerror]
+        return '<%s at %#x>' % (', '.join(status), id(self))
         
     def __str__(self):
-        return "[<%s> %s%s]" % (
-            self.__class__.__name__,
-            self.desc,
-            (": " + self.detail) if self.detail else '')
+        return '[<%s> %s]' % (self.__class__.__name__, self.strerror)
 
 # Timeout errors
 
 class ReadTimeoutError(SpdyError):
-    desc = "Read Timeout"
+    desc = 'Read Timeout'
 
 class IdleTimeoutError(SpdyError):
-    desc = "Idle Timeout"
+    desc = 'Idle Timeout'
 
 # TCP connection errors
 
 class ConnectionClosedError(SpdyError):
-    desc = "TCP connection has been closed"
+    desc = 'TCP connection has been closed'
 
 class ConnectError(SpdyError):
-    desc = "TCP Connection failed"
+    desc = 'TCP Connection failed'
     
 # SPDY stream specific errors 
 
 class UrlError(SpdyError):
-    desc = "Unsupported or invalid URI"
+    desc = 'Unsupported or invalid URI'
     
 class ExchangeStateError(SpdyError):
-    desc = "Cannot perform operation"
+    desc = 'Cannot perform operation'
 
 class RstStreamError(SpdyError):
-    desc = "Received RST_STREAM"
+    desc = 'Received RST_STREAM'
 
 # SPDY session specific errors
 
 class FrameSizeError(SpdyError):
-    desc = "Invalid frame size received"
+    desc = 'Invalid frame size received'
     
 class ParsingError(SpdyError):
-    desc = "Error parsing SPDY frame"
+    desc = 'Error parsing SPDY frame'
     
 class SpdyVersionError(SpdyError):
-    desc = "Unsupported SPDY protocol"
+    desc = 'Unsupported SPDY protocol'
     
 class FlagError(SpdyError):
-    desc = "Invalid flag set for frame"
+    desc = 'Invalid flag set for frame'
 
 class StreamIdError(SpdyError):
-    desc = "Invalid stream ID for session"
+    desc = 'Invalid stream ID for session'
 
 class HeaderError(SpdyError):
-    desc = "Invalid headers"
+    desc = 'Invalid headers'
     
 class ProtocolError(SpdyError):
-    desc = "SPDY protocol error"
+    desc = 'SPDY protocol error'
     
 class PingError(SpdyError):
-    desc = "Invalid ping ID"
+    desc = 'Invalid ping ID'
 

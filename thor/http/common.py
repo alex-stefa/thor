@@ -61,7 +61,7 @@ def header_names(hdr_tuples):
     """
     Given a list of header tuples, return the set of the header names seen.
     """
-    return set([n.lower() for n, v in hdr_tuples])
+    return set([n.lower() for (n, v) in hdr_tuples])
 
 def header_dict(hdr_tuples, omit=None):
     """
@@ -158,7 +158,7 @@ class HttpMessageHandler:
         making the appropriate calls.
         """
         if type(instr) == bytes: # convert to string
-            instr = instr.decode()
+            instr = instr.decode(encoding='utf8', errors='strict') # error can happen here if receiving TLS input over plain TCP
         if self._input_buffer != "":
             # will need to move to a list if writev comes around
             instr = self._input_buffer + instr

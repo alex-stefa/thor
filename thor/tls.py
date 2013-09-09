@@ -96,12 +96,12 @@ class TlsConfig():
         cafile=None,
         capath=None,
         npn_prot=None):
-        self._keyfile=keyfile,
-        self._certfile=certfile,
-        self._password=password,
-        self._cafile=cafile,
-        self._capath=capath,
-        self._npn_prot=npn_prot,
+        self._keyfile=keyfile
+        self._certfile=certfile
+        self._password=password
+        self._cafile=cafile
+        self._capath=capath
+        self._npn_prot=npn_prot
         context = sys_ssl.SSLContext(sys_ssl.PROTOCOL_SSLv23)
         if certfile:
             context.load_cert_chain(certfile, keyfile, password)
@@ -234,9 +234,9 @@ class TlsHandshake(EventSource):
         except sys_ssl.SSLWantWriteError:
             self.once('writable', self._handshake)
         except sys_ssl.SSLError as why:
-            self._handle_error(sys_ssl.SSLError, why)
+            self._handle_error(type(why), why) # FIXME: some errors are not worthy of reporting
         except socket.error as why:
-            self._handle_error(socket.error, why)
+            self._handle_error(type(why), why)
 
     def _handle_complete(self):
         self.unregister_fd()
@@ -271,8 +271,7 @@ def monkey_patch_ssl():
         def _real_connect(self, addr, return_errno):
             if self._sslobj:
                 raise ValueError(
-                    "attempt to connect already-connected SSLSocket!"
-                )
+                    "attempt to connect already-connected SSLSocket!")
             self._sslobj = _ssl.sslwrap(self._sock, False, self.keyfile,
                 self.certfile, self.cert_reqs, self.ssl_version,
                 self.ca_certs, self.ciphers)

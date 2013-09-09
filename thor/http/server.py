@@ -40,26 +40,31 @@ import sys
 from thor.loop import schedule
 from thor.events import EventEmitter, on
 from thor.tcp import TcpServer
-
+from thor.tls import TlsServer, TlsConfig
 from thor.http.common import HttpMessageHandler, \
     CLOSE, COUNTED, CHUNKED, \
     ERROR, \
     hop_by_hop_hdrs, \
     get_header, header_names
 from thor.http.error import HttpVersionError, HostRequiredError, \
-    TransferCodeError
+    TransferCodeError, ConnectError
 
 
 class HttpServer(EventEmitter):
     "An asynchronous HTTP server."
 
     tcp_server_class = TcpServer
+    tls_server_class = TlsServer
     idle_timeout = 60 # in seconds
 
-    def __init__(self, host, port, loop=None):
+    def __init__(self, host, port, loop=None, tls_config=None):
         EventEmitter.__init__(self)
-        self.tcp_server = self.tcp_server_class(host, port, loop=loop)
+        if not tls_config:
+            self.tcp_server = self.tcp_server_class(host, port, loop=loop)
+        else:
+            self.tcp_server = self.tls_server_class(host, port, tls_config, loop=loop)
         self.tcp_server.on('connect', self.handle_conn)
+        self.tcp_server.on('connect_error', self.handle_error)
         schedule(0, self.emit, 'start')
 
     def handle_conn(self, tcp_conn):
@@ -68,6 +73,9 @@ class HttpServer(EventEmitter):
         tcp_conn.on('close', http_conn.conn_closed)
         tcp_conn.on('pause', http_conn.res_body_pause)
         tcp_conn.pause(False)
+        
+    def handle_error(self, err_type, err_id, err_str):
+        self.emit('error', ConnectError(err_str))
 
     def shutdown(self):
         "Stop the server"

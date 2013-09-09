@@ -31,6 +31,7 @@ import struct
 from operator import itemgetter
 from collections import defaultdict
 
+from thor.enum import enum
 from thor.spdy import error
 
 from . import c_zlib
@@ -235,43 +236,6 @@ def dummy(*args, **kw):
     Dummy method that does nothing; useful to ignore a callback.
     """
     pass
-
-# see http://stackoverflow.com/questions/36932/how-can-i-represent-an-enum-in-python
-def enum(*sequential, **named):
-    """
-    Creates an enumeration. Can receive both sequential and named parameters.
-    
-    Example:
-        Numbers = enum('ONE', 'TWO', 'THREE', 'FOUR'='four', 'FIVE'=555)
-        Numbers.ONE
-        >> 0
-        Numbers.TWO
-        >> 1
-        Numbers.THREE
-        >> 2
-        Numbers.FOUR
-        >> 'four'
-        Numbers.FIVE
-        >> 555
-        Numbers.str[Numbers.ONE]
-        >> 'ONE'
-        Numbers.str[0]
-        >> 'ONE'
-        Numbers.str[Numbers.FOUR]
-        >> 'FOUR'
-        Numbers.str['four']
-        >> 'FOUR'
-        Numbers.values
-        >> [0, 1, 2, 'four', 555]
-        Numbers.keys
-        >> ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE']
-    """
-    enums = dict(list(zip(sequential, list(range(len(sequential))))), **named)
-    reverse = dict((value, key) for key, value in enums.items())
-    enums['str'] = reverse
-    enums['values'] = reverse.keys()
-    enums['keys'] = reverse.values()
-    return type('Enum', (), enums)
     
 #-------------------------------------------------------------------------------
 
@@ -445,18 +409,23 @@ class DataFrame(SpdyFrame):
     """
     A SPDY DATA frame.
     """
+    preview_len = 240
+    
     def __init__(self, flags, stream_id, data):
         SpdyFrame.__init__(self, FrameTypes.DATA, flags)
         self.stream_id = stream_id
         self.data = data
         
     def __str__(self):
-        preview_len = 240
-        return SpdyFrame.__str__(self) + ' ID=%d LEN=%d]%s%s' % (
-            self.stream_id, 
-            len(self.data), 
-            '\n' if len(self.data) > 0 else '',
-            bytes(self.data[:preview_len]).decode(errors='ignore'))
+        preview_str = ''
+        if len(self.data) > 0:
+            try:
+                preview_str = '\n' + bytes(self.data[:self.preview_len]).decode(
+                    encoding='ascii', errors='strict')
+            except UnicodeError:
+                pass
+        return SpdyFrame.__str__(self) + ' ID=%d LEN=%d]%s' % (
+            self.stream_id, len(self.data), preview_str)
         
     def serialize(self, context):
         # TODO: check that stream_id and data len don't overflow

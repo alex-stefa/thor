@@ -20,5 +20,6 @@ from thor.tcp import TcpClient, TcpServer
 from thor.tls import TlsClient, TlsServer, TlsConfig
 from thor.udp import UdpEndpoint
 from thor.events import on
+from thor.enum import enum
 from thor.http import HttpClient, HttpServer
 from thor.spdy import SpdyClient, SpdyServer

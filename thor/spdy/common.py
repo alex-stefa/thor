@@ -94,7 +94,7 @@ def get_values(hdr_tuples, name):
                     [i[1] for i in hdr_tuples if i[0].lower() == name]], []) 
             if len(v) > 0]
     
-def clean_headers(hdr_tuples, invalid_hdrs):
+def clean_headers(hdr_tuples, invalid_hdrs=None):
     """
     Given a list of header tuples, filters out tuples with empty header names
     or in the specified invalid header names list.
@@ -107,7 +107,7 @@ def clean_headers(hdr_tuples, invalid_hdrs):
             continue
         name = str(entry[0]).strip().lower()
         value = str(entry[1]) if entry[1] else ''
-        if name not in invalid_hdrs:
+        if name not in (invalid_hdrs or list()):
             clean_tuples.append((name, value))
     return clean_tuples
     
@@ -264,6 +264,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
     Event handlers that can be added:
         bound(tcp_conn)
         frame(frame)
+        output(frame)
         goaway(reason, last_stream_id)
         pause(paused)
         error(err)
@@ -314,14 +315,6 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
     def __str__(self):
         return '[<%s> %s]' % (self.__class__.__name__, self.origin or 'unbound')
         
-    ### Output methods to be implemented by inheriting classes
-
-    def _queue_frame(self, priority, frame):
-        raise NotImplementedError
-        
-    def _output(self, chunk):
-        raise NotImplementedError
-
     ### "Public" methods
     
     @property
@@ -378,6 +371,17 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             self.tcp_conn = None
             #self._origin = None # FIXME: do we want this?
         self.emit('close')
+        
+    ### Output method to be implemented by inheriting classes
+
+    def _queue_frame(self, priority, frame):
+        self._clear_idle_timeout()
+        self._set_idle_timeout()
+        self.emit('output', frame)
+        self._queue_frame_do(priority, frame)
+
+    def _queue_frame_do(self, priority, frame):
+        raise NotImplementedError
 
     ### TCP handling methods
         
@@ -392,7 +396,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self.tcp_conn.on('pause', self._handle_pause)
         self._clear_idle_timeout()
         self._set_idle_timeout()
-        self._output(b'') # kick the output buffer
+        #self._output(b'') # kick the output buffer
         # FIXME: is the above call necessary and should we wait for when we need to send data first?
         self.tcp_conn.pause(False)
         self.emit('bound', tcp_conn)
