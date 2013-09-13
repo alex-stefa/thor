@@ -7,7 +7,7 @@ Thor is a Python library for evented IO, with a focus on enabling
 high-performance HTTP intermediaries.
 """
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 
 from sys import hexversion as _hexversion
 assert _hexversion > 0x03030000, \

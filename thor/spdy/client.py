@@ -248,7 +248,7 @@ class SpdyClientSession(SpdySession):
                     req_hdrs))
     
     def _req_body(self, exchange, chunk):
-        if self._ensure_can_send(exchange) and chunk is not none:
+        if self._ensure_can_send(exchange) and chunk is not None:
             self._queue_frame(
                 exchange.priority,
                 DataFrame(
