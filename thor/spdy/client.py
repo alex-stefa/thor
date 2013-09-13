@@ -160,10 +160,6 @@ class SpdyClientSession(SpdySession):
         """
         return SpdyClientExchange(self.client, self)
     
-    def close(self, reason=GoawayReasons.OK):
-        SpdySession.close(self, reason)
-        self.client._remove_session(self)
-
     ### Exchange request methods
     
     def _init_pushed_exchg(self, syn_stream_frame):
@@ -281,6 +277,12 @@ class SpdyClientSession(SpdySession):
         if self.tcp_conn and self.tcp_conn.tcp_connected:
             self.tcp_conn.write(b''.join(self._output_buffer))
             self._output_buffer = []
+            
+    def _is_write_pending(self):
+        return False
+        
+    def _init_output(self):
+        self._output(b'')
                         
     ### TCP handling methods
     
@@ -515,9 +517,8 @@ class SpdyClient(EventEmitter):
         """
         Find an idle connection for (host, port), or create a new one.
         """
-        try:
-            session = self._sessions[origin]
-        except KeyError:
+        session = self._sessions.get(origin, None)
+        if not session or not session.is_active:
             session = self.spdy_session_class(self)
             if self._tls_config is None:
                 tcp_client = self.tcp_client_class(self._loop)

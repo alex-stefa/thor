@@ -307,8 +307,8 @@ class SpdyServerSession(SpdySession):
             if len(self._write_queue[p]) > 0:
                 if self.is_active:
                     frame = self._write_queue[p][0]
-                    self._output(frame.serialize(self))
                     self._write_queue[p] = self._write_queue[p][1:]
+                    self._output(frame.serialize(self))
                 break
         if self._has_write_data() and self.is_active:
             self._schedule_write()
@@ -323,10 +323,12 @@ class SpdyServerSession(SpdySession):
         self._write_queue[priority].append(frame)
         self._schedule_write()
         
-    def _output(self, chunk):
-        if self.tcp_conn and self.tcp_conn.tcp_connected:
-            self.tcp_conn.write(chunk)
-
+    def _is_write_pending(self):
+        return self._has_write_data()
+        
+    def _init_output(self):
+        self._output(b'')
+        
     ### TCP handling methods 
             
     def _handle_pause(self, paused):

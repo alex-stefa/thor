@@ -287,6 +287,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self._idle_timeout_ev = None
         self._sent_goaway = False
         self._received_goaway = False
+        self._closing = False
         self._pings = dict()
         if is_client:
             self._highest_created_stream_id = -1
@@ -363,8 +364,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         Tear down the SPDY session for given reason.
         """
         if not self.is_active:
-            self._clear_idle_timeout()
-            self.emit('close')
+            self._close_do()
             return
         self._sent_goaway = True
         if reason is not None:
@@ -373,10 +373,17 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
                 GoawayFrame(max(self._highest_accepted_stream_id, 0), reason))
         self._close_active_exchanges(error.ConnectionClosedError(
                 'Local endpoint has closed the connection.'))
+        if self._is_write_pending():
+            self._closing = True
+        else:
+            self._close_do()
+        
+    def _close_do(self):
         if self.tcp_conn:
             self.tcp_conn.close()
             self.tcp_conn = None
             #self._origin = None # FIXME: do we want this?
+        self._closing = False
         self._clear_idle_timeout()
         self.emit('close')
         
@@ -391,8 +398,17 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
     def _queue_frame_do(self, priority, frame):
         raise NotImplementedError
         
-    def _output(self, chunk):
+    def _is_write_pending(self):
         raise NotImplementedError
+        
+    def _init_output(self):
+        raise NotImplementedError
+        
+    def _output(self, chunk):
+        if self.tcp_conn and self.tcp_conn.tcp_connected:
+            self.tcp_conn.write(chunk)
+        if self._closing and not self._is_write_pending():
+            self._close_do()
 
     ### TCP handling methods
         
@@ -407,7 +423,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self.tcp_conn.on('pause', self._handle_pause)
         self._clear_idle_timeout()
         self._set_idle_timeout()
-        self._output(b'') # kick the output buffer
+        self._closing = False
+        self._init_output() # kick the output buffer
         # FIXME: should we wait for when we need to send data first?
         self.tcp_conn.pause(False)
         self.emit('bound', tcp_conn)
