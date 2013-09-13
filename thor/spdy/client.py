@@ -281,7 +281,7 @@ class SpdyClientSession(SpdySession):
         if self.tcp_conn and self.tcp_conn.tcp_connected:
             self.tcp_conn.write(b''.join(self._output_buffer))
             self._output_buffer = []
-
+                        
     ### TCP handling methods
     
     def _handle_connect_error(self, err_type, err_id, err_str):

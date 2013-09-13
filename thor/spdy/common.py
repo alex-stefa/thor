@@ -31,7 +31,7 @@ THE SOFTWARE.
 """
 
 import time
-from urllib.parse import urlunsplit
+from urllib.parse import urlunsplit, urlsplit
 from collections import defaultdict
 
 from thor.loop import _loop as global_loop
@@ -132,17 +132,23 @@ class HeaderDict(dict):
         except (IndexError, KeyError):
             return None
     @property
+    def path_split(self): # returns (path, query, fragment) tuple
+        path = self.path
+        if path is not None:
+            return urlsplit(path)[2:5] 
+    @property
     def authority(self):
         try:
             return self[':host'][-1]
         except (IndexError, KeyError):
             return None
     @property
-    def host(self):
-        authority = self.authority
-        if authority is None:
+    def host(self): # returns (hostname, port) tuple
+        host = self.authority
+        if host is None:
             return (None, None)
-        host = authority.partition('@')[0]
+        if '@' in host:
+            host = host.partition('@')[2]
         (hostname, colon, port) = host.partition(':')
         try:
             return (hostname, int(port))
@@ -164,7 +170,7 @@ class HeaderDict(dict):
     def uri(self):
         return urlunsplit((self.scheme, self.authority, self.path, '', ''))
     @property
-    def status(self):
+    def status(self): # returns (code, phrase) tuple
         try:
             status = self[':status'][-1]
         except (IndexError, KeyError):
@@ -322,7 +328,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         """
         Session alive or not.
         """
-        return self.tcp_conn is not None
+        return (self.tcp_conn is not None and self.tcp_conn.tcp_connected)
     
     @property
     def origin(self):
@@ -357,22 +363,24 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         Tear down the SPDY session for given reason.
         """
         if not self.is_active:
+            self._clear_idle_timeout()
+            self.emit('close')
             return
         self._sent_goaway = True
         if reason is not None:
             self._queue_frame(
                 Priority.MAX,
                 GoawayFrame(max(self._highest_accepted_stream_id, 0), reason))
-        self._clear_idle_timeout()
         self._close_active_exchanges(error.ConnectionClosedError(
                 'Local endpoint has closed the connection.'))
         if self.tcp_conn:
             self.tcp_conn.close()
             self.tcp_conn = None
             #self._origin = None # FIXME: do we want this?
+        self._clear_idle_timeout()
         self.emit('close')
         
-    ### Output method to be implemented by inheriting classes
+    ### Output methods to be implemented by inheriting classes
 
     def _queue_frame(self, priority, frame):
         self._clear_idle_timeout()
@@ -381,6 +389,9 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self._queue_frame_do(priority, frame)
 
     def _queue_frame_do(self, priority, frame):
+        raise NotImplementedError
+        
+    def _output(self, chunk):
         raise NotImplementedError
 
     ### TCP handling methods
@@ -396,8 +407,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self.tcp_conn.on('pause', self._handle_pause)
         self._clear_idle_timeout()
         self._set_idle_timeout()
-        #self._output(b'') # kick the output buffer
-        # FIXME: is the above call necessary and should we wait for when we need to send data first?
+        self._output(b'') # kick the output buffer
+        # FIXME: should we wait for when we need to send data first?
         self.tcp_conn.pause(False)
         self.emit('bound', tcp_conn)
     

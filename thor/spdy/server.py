@@ -288,7 +288,7 @@ class SpdyServerSession(SpdySession):
                     b''))
             exchange._res_state = ExchangeStates.DONE
 
-    ### Output-related method called by common.SpdySession
+    ### Output-related methods called by common.SpdySession
     
     def _has_write_data(self):
         if self._output_paused:
@@ -305,11 +305,12 @@ class SpdyServerSession(SpdySession):
         self._write_pending = False
         for p in Priority.range:
             if len(self._write_queue[p]) > 0:
-                frame = self._write_queue[p][0]
-                self._write_queue[p] = self._write_queue[p][1:]
-                self._output(frame.serialize(self))
+                if self.is_active:
+                    frame = self._write_queue[p][0]
+                    self._output(frame.serialize(self))
+                    self._write_queue[p] = self._write_queue[p][1:]
                 break
-        if self._has_write_data():
+        if self._has_write_data() and self.is_active:
             self._schedule_write()
         
     def _schedule_write(self):
@@ -321,7 +322,7 @@ class SpdyServerSession(SpdySession):
         self._output_paused = False
         self._write_queue[priority].append(frame)
         self._schedule_write()
-
+        
     def _output(self, chunk):
         if self.tcp_conn and self.tcp_conn.tcp_connected:
             self.tcp_conn.write(chunk)

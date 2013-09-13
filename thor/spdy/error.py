@@ -27,30 +27,49 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from thor.enum import enum
+# TODO: error numbers
 
-Errnos = enum(
-    'ESPDY', # Generic SPDY error
-    'E'
-    
-
-)
-
-
-
+# from thor.enum import enum
+#
+# Errnos = enum(
+#     'ESPDY' # Generic SPDY error
+# )
+# 
+# 
+# class SpdyError(Exception):
+#     desc = 'Unknown Error'
+#     _errnos = set([Errnos.ESPDY])
+# 
+#     def __init__(self, detail=None, errno=Errnos.ESPDY):
+#         Exception.__init__(self)
+#         self.detail = detail
+#         self.errno = errno if errno in self._errnos else Errnos.ESPDY
+#         self.strerror = '[%s] %s%s' % (
+#             Errnos.str[self.errno],
+#             self.desc,
+#             (': ' + str(self.detail)) if self.detail else '')
+# 
+#     def __repr__(self):
+#         status = [self.__class__.__module__ + '.' + self.__class__.__name__,
+#             self.strerror]
+#         return '<%s at %#x>' % (', '.join(status), id(self))
+#         
+#     def __str__(self):
+#         return '[<%s> %s]' % (self.__class__.__name__, self.strerror)
+# 
+        
 class SpdyError(Exception):
     desc = 'Unknown Error'
-    _errnos = set([Errnos.ESPDY])
 
-    def __init__(self, detail=None, errno=Errnos.ESPDY):
+    def __init__(self, detail=None):
         Exception.__init__(self)
         self.detail = detail
-        self.errno = errno if errno in self._errnos else Errnos.ESPDY
-        self.strerror = '[%s] %s%s' % (
-            Errnos.str[self.errno],
+        
+    @property
+    def strerror(self):
+        return '%s%s' % (
             self.desc,
             (': ' + str(self.detail)) if self.detail else '')
-
 
     def __repr__(self):
         status = [self.__class__.__module__ + '.' + self.__class__.__name__,
@@ -59,6 +78,7 @@ class SpdyError(Exception):
         
     def __str__(self):
         return '[<%s> %s]' % (self.__class__.__name__, self.strerror)
+        
 
 # Timeout errors
 

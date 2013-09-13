@@ -368,9 +368,10 @@ class SpdyFrame(object):
         self.flags = flags
     
     def __str__(self):
-        return '[<%s> %s' % (
+        return '[<%s>%s' % (
             FrameTypes.str[self.type], 
-            flags_str(self.type, self.flags))
+            (' ' + flags_str(self.type, self.flags)) 
+                if self.flags != Flags.FLAG_NONE else '')
         
     @staticmethod
     def _serialize_control_frame(type, flags, data):
