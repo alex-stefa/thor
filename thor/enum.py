@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-Simple enumeration implementation in Python
+Simple enumeration type implementation in Python
 """
 
 __author__ = "Alex Stefanescu <alex.stefa@gmail.com>"

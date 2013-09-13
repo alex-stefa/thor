@@ -7,9 +7,9 @@ This module contains utility functions for thor and a base class
 for the SPDY-specific portions of the client and server.
 """
 
-__author__ = "Mark Nottingham <mnot@mnot.net>"
+__author__ = "Alex Stefanescu <alex.stefa@gmail.com>"
 __copyright__ = """\
-Copyright (c) 2008-2013 Mark Nottingham, Alex Stefanescu
+Copyright (c) 2013 Alex Stefanescu
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -8,9 +8,10 @@ This is a generic library for building event-based / asynchronous
 SSL/TLS servers and clients.
 """
 
-__author__ = "Mark Nottingham <mnot@mnot.net>"
+__author__ = \
+    "Mark Nottingham <mnot@mnot.net>, Alex Stefanescu <alex.stefa@gmail.com>"
 __copyright__ = """\
-Copyright (c) 2005-2013 Mark Nottingham, Alex Stefanescu
+Copyright (c) 2008-2013 Mark Nottingham, Alex Stefanescu
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
