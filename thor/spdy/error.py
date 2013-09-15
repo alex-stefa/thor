@@ -82,54 +82,66 @@ class SpdyError(Exception):
 
 # Timeout errors
 
-class ReadTimeoutError(SpdyError):
+class TimeoutError(SpdyError):
+    desc = 'Generic Timeout Error'
+
+class ReadTimeoutError(TimeoutError):
     desc = 'Read Timeout'
 
-class IdleTimeoutError(SpdyError):
+class IdleTimeoutError(TimeoutError):
     desc = 'Idle Timeout'
 
 # TCP connection errors
 
-class ConnectionClosedError(SpdyError):
+class ConnectionError(SpdyError):
+    desc = 'Generic TCP Connection Error'
+
+class ConnectionClosedError(ConnectionError):
     desc = 'TCP connection has been closed'
 
-class ConnectError(SpdyError):
+class ConnectionFailedError(ConnectionError):
     desc = 'TCP Connection failed'
     
-# SPDY stream specific errors 
+# SPDY stream specific errors
 
-class UrlError(SpdyError):
+class StreamError(SpdyError):
+    desc = 'Generic SPDY Stream Error'
+
+class UrlError(StreamError):
     desc = 'Unsupported or invalid URI'
     
-class ExchangeStateError(SpdyError):
+class ExchangeStateError(StreamError):
     desc = 'Cannot perform operation'
 
-class RstStreamError(SpdyError):
+class RstStreamError(StreamError):
     desc = 'Received RST_STREAM'
 
 # SPDY session specific errors
 
-class FrameSizeError(SpdyError):
+class SessionError(SpdyError):
+    desc = 'Generic SPDY session error'
+
+class FrameSizeError(SessionError):
     desc = 'Invalid frame size received'
     
-class ParsingError(SpdyError):
+class ParsingError(SessionError):
     desc = 'Error parsing SPDY frame'
     
-class SpdyVersionError(SpdyError):
+class SpdyVersionError(SessionError):
     desc = 'Unsupported SPDY protocol'
     
-class FlagError(SpdyError):
+class FlagError(SessionError):
     desc = 'Invalid flag set for frame'
 
-class StreamIdError(SpdyError):
+class StreamIdError(SessionError):
     desc = 'Invalid stream ID for session'
 
-class HeaderError(SpdyError):
+class HeaderError(SessionError):
     desc = 'Invalid headers'
     
-class ProtocolError(SpdyError):
+class ProtocolError(SessionError):
     desc = 'SPDY protocol error'
     
-class PingError(SpdyError):
+class PingError(SessionError):
     desc = 'Invalid ping ID'
 

@@ -390,8 +390,6 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
     ### Output methods to be implemented by inheriting classes
 
     def _queue_frame(self, priority, frame):
-        self._clear_idle_timeout()
-        self._set_idle_timeout()
         self.emit('output', frame)
         self._queue_frame_do(priority, frame)
 
@@ -405,6 +403,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         raise NotImplementedError
         
     def _output(self, chunk):
+        self._clear_idle_timeout()
+        self._set_idle_timeout()
         if self.tcp_conn and self.tcp_conn.tcp_connected:
             self.tcp_conn.write(chunk)
         if self._closing and not self._is_write_pending():

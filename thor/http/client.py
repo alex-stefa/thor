@@ -69,7 +69,7 @@ class HttpClient(object):
         self.proxy_tls = False
         self.proxy_host = None
         self.proxy_port = None
-        self.tls_config = tls_config or TlsConfig()
+        self.tls_config = tls_config
         self._idle_conns = defaultdict(list)
         self._conn_counts = defaultdict(int)
         self.loop.on('stop', self._close_conns)

@@ -74,7 +74,6 @@ class SpdyClientExchange(SpdyExchange):
         
         If @done is True, the request is sent immediately with an empty body.
         """
-        # TODO: find out where to connect to the hard way
         (scheme, authority, path, query, fragment) = urlsplit(uri)
         scheme = scheme.lower()
         if scheme not in ['http', 'https']:
@@ -91,7 +90,8 @@ class SpdyClientExchange(SpdyExchange):
                 self.emit('error', error.UrlError('Non-integer port in URL.'))
                 return
         else:
-            host, port = authority, 80
+            # TODO: find out where to connect to the hard way
+            host, port = authority, {'http': 80, 'https': 443}[scheme]
         path = urlunsplit(('', '', path, query, fragment))
         self.session._req_start(self, method, scheme, authority, path, 
             req_hdrs, done)
@@ -270,19 +270,19 @@ class SpdyClientSession(SpdySession):
     ### Output-related methods called by common.SpdySession
 
     def _queue_frame_do(self, priority, frame):
-        self._output(frame.serialize(self))
-
-    def _output(self, chunk):
+        self._output_do(frame.serialize(self))
+        
+    def _output_do(self, chunk):
         self._output_buffer.append(chunk)
-        if self.tcp_conn and self.tcp_conn.tcp_connected:
-            self.tcp_conn.write(b''.join(self._output_buffer))
+        self._output(b''.join(self._output_buffer))
+        if self.is_active:
             self._output_buffer = []
             
     def _is_write_pending(self):
         return False
         
     def _init_output(self):
-        self._output(b'')
+        self._output_do(b'')
                         
     ### TCP handling methods
     
@@ -290,7 +290,7 @@ class SpdyClientSession(SpdySession):
         """
         The connection to the server has failed.
         """
-        self._handle_error(error.ConnectError(err_str))
+        self._handle_error(error.ConnectionFailedError(err_str))
         
     def _handle_pause(self, paused):
         SpdySession._handle_pause(self, paused)
@@ -399,6 +399,7 @@ class SpdyClientSession(SpdySession):
                         exchange._res_state = ExchangeStates.DONE
                         exchange.emit('response_done')
                     elif frame.flags == Flags.FLAG_UNIDIRECTIONAL:
+                        exchange._res_state = ExchangeStates.STARTED
                         self._set_read_timeout(exchange, 'body')
                     else:
                         exchange.emit('error', error.ProtocolError(

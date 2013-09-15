@@ -237,9 +237,9 @@ class SpdyServerSession(SpdySession):
         res_hdrs.append((':version', 'HTTP/1.1'))
         fin_flag = Flags.FLAG_FIN if done else Flags.FLAG_NONE
         if exchange._pushed:
-            req_hdrs.append((':scheme', scheme if scheme else ''))
-            req_hdrs.append((':host', host if host else ''))
-            req_hdrs.append((':path', path if path else ''))
+            res_hdrs.append((':scheme', scheme if scheme else ''))
+            res_hdrs.append((':host', host if host else ''))
+            res_hdrs.append((':path', path if path else ''))
             self._queue_frame(
                 exchange.priority,
                 SynStreamFrame(
@@ -327,7 +327,8 @@ class SpdyServerSession(SpdySession):
         return self._has_write_data()
         
     def _init_output(self):
-        self._output(b'')
+        self._schedule_write()
+        # self._output(b'')
         
     ### TCP handling methods 
             
@@ -494,7 +495,7 @@ class SpdyServer(EventEmitter):
         """
         An error has occurred while accepting a new connection.
         """
-        self.emit('error', error.ConnectError('%s: %s' % 
+        self.emit('error', error.ConnectionFailedError('%s: %s' % 
             (err_type.__qualname__, err_str)))
         
     def shutdown(self):

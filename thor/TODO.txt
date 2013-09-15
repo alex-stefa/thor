@@ -1,4 +1,6 @@
 
+More SPDY protocol details: 
+
 If a server receives a request where the sum of the data frame payload lengths does not equal the size of the Content-Length header, the server MUST return a 400 (Bad Request) error.
 
 POST-specific changes:
@@ -15,24 +17,25 @@ If the server sends a HEADERS frame after sending a data frame for the same stre
 
 The user-agent is free to prioritize requests as it sees fit. If the user-agent cannot make progress without receiving a resource, it should attempt to raise the priority of that resource. Resources such as images, SHOULD generally use the lowest priority.
 
---
+====
 
 Rewrite error handling related to sockets for Python3 (socket.error --> OSError)
 http://docs.python.org/3.3/library/socket.html
 http://docs.python.org/3.3/library/exceptions.html#OSError
 
---
+====
 
 Rewrite string formatting using new syntax (.format instead of % operator)
 
---
+====
 
 Better socket write performance: is b''.join(..) good enough?
 Better socket read performance: see thor/spdy/common.py in handle_input(..)
 
---
+====
 
 Check more Python3 changes here: http://docs.python.org/3.2/whatsnew/3.0.html
 NB: http://docs.python.org/3.2/howto/unicode.html#unicode-howto
 
---
+====
+

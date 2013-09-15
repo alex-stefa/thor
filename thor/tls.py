@@ -90,13 +90,8 @@ class TlsConfig():
     NPN_HTTP = ['http/1.1', 'http/1.0']
     NPN_SPDY = ['spdy/3']
 
-    def __init__(self, 
-        keyfile=None,
-        certfile=None,
-        password=None,
-        cafile=None,
-        capath=None,
-        npn_prot=None):
+    def __init__(self, keyfile=None, certfile=None, password=None, cafile=None,
+        capath=None, npn_prot=None):
         self._keyfile=keyfile
         self._certfile=certfile
         self._password=password
@@ -145,9 +140,9 @@ class TlsClient(TcpClient):
     conn_handler will be called with the tcp_conn as the argument
     when the connection is made.
     """
-    def __init__(self, tls_config, loop=None):
+    def __init__(self, tls_config=None, loop=None):
         TcpClient.__init__(self, loop)
-        self.tls_config = tls_config
+        self.tls_config = tls_config or TlsConfig
         self.sock = tls_config.context.wrap_socket(
             self.sock,
             server_side=False,
@@ -183,9 +178,9 @@ class TlsServer(TcpServer):
 
     conn_handler is called every time a new client connects.
     """
-    def __init__(self, host, port, tls_config, sock=None, loop=None):
+    def __init__(self, host, port, tls_config=None, sock=None, loop=None):
         TcpServer.__init__(self, host, port, sock, loop)
-        self.tls_config = tls_config
+        self.tls_config = tls_config or TlsConfig()
         
     def create_conn(self, sock, host, port):
         sock = self.tls_config.context.wrap_socket(
@@ -304,7 +299,7 @@ if __name__ == "__main__":
 
     def go(conn):
         conn.on('data', sys.stdout.write)
-        conn.write("GET / HTTP/1.1\r\nHost: %s\r\n\r\n" % test_host)
+        conn.write(("GET / HTTP/1.1\r\nHost: %s\r\n\r\n" % test_host).encode())
         conn.pause(False)
         print('conn cipher: %s' % conn.socket.cipher())
 

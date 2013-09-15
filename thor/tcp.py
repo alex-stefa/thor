@@ -343,10 +343,10 @@ class TcpClient(EventSource):
         try:
             err = self.sock.connect_ex((host, port))
         except socket.gaierror as why:
-            self.handle_conn_error(socket.gaierror, why)
+            self.handle_conn_error(type(why), [why.errno, why.strerror])
             return
         except socket.error as why:
-            self.handle_conn_error(socket.error, why)
+            self.handle_conn_error(type(why), [why.errno, why.strerror])
             return
         if err != errno.EINPROGRESS:
             self.handle_conn_error(socket.error, [err, os.strerror(err)])
@@ -392,8 +392,8 @@ class TcpClient(EventSource):
             err_id = self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             err_str = os.strerror(err_id)
         else:
-            err_id = why.errno
-            err_str = why.strerror
+            err_id = why[0]
+            err_str = why[1]
         self._error_sent = True
         self.unregister_fd()
         self.emit('connect_error', err_type, err_id, err_str)
@@ -408,10 +408,10 @@ if __name__ == "__main__":
     def handle_conn(conn):
         conn.pause(False)
         def echo(chunk):
-            if chunk.strip().lower() in ['quit', 'stop']:
+            if chunk.decode().strip().lower() in ['quit', 'stop']:
                 stop()
             else:
-                conn.write("-> %s" % chunk)
+                conn.write(("-> %s" % chunk).encode())
         conn.on('data', echo)
     server.on('connect', handle_conn)
     run()
