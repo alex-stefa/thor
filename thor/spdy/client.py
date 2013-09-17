@@ -141,16 +141,24 @@ class SpdyClientSession(SpdySession):
         error(err)
         close()
     """
-    def __init__(self, client):
+    def __init__(self, client, origin):
         SpdySession.__init__(self, True, client._idle_timeout, client._loop)
         self.client = client
-        self._read_timeout = client._read_timeout
+        self._origin = origin
         self._output_buffer = list()
+        self._read_timeout = client._read_timeout
         self.frame_handlers[FrameTypes.DATA].append(self._frame_data)
         self.frame_handlers[FrameTypes.SYN_STREAM].append(self._frame_syn_stream)
         self.frame_handlers[FrameTypes.SYN_REPLY].append(self._frame_syn_reply)
         self.frame_handlers[FrameTypes.HEADERS].append(self._frame_headers)
         self.frame_handlers[FrameTypes.RST_STREAM].append(self._frame_rst_stream)
+        
+    def _reset(self):
+        self._output_buffer = list()
+        if self.exchanges:
+            for exchange in self.exchanges.values():
+                self._clear_read_timeout(exchange)
+        SpdySession._reset(self)
 
     ### "Public" methods
         
@@ -159,6 +167,20 @@ class SpdyClientSession(SpdySession):
         Returns a new exchange useful to make a new request.
         """
         return SpdyClientExchange(self.client, self)
+        
+    def connect(self):
+        if not self.is_active:
+            self._reset()
+            if self.client._tls_config is None:
+                tcp_client = self.client.tcp_client_class(
+                    self.client._loop)
+            else:
+                tcp_client = self.client.tls_client_class(
+                    self.client._tls_config, self.client._loop)
+            tcp_client.on('connect', self._bind)
+            tcp_client.on('connect_error', self._handle_connect_error)
+            tcp_client.connect(self._origin[0], self._origin[1],
+                self.client._connect_timeout)
     
     ### Exchange request methods
     
@@ -217,62 +239,63 @@ class SpdyClientSession(SpdySession):
         self.exchanges[exchange.stream_id] = exchange
         if done:
             self._queue_frame(
-                exchange.priority,
                 SynStreamFrame(
                     Flags.FLAG_FIN, 
                     exchange.stream_id,
                     req_hdrs,
                     exchange.priority,
-                    0, 0)) # stream_assoc_id, slot
+                    0, 0), # stream_assoc_id, slot
+                exchange.priority) 
             exchange._req_state = ExchangeStates.DONE
             self._set_read_timeout(exchange, 'start')
         else:
             self._queue_frame(
-                exchange.priority,
                 SynStreamFrame(
                     Flags.FLAG_NONE, 
                     exchange.stream_id,
                     req_hdrs,
                     exchange.priority,
-                    0, 0)) # stream_assoc_id, slot
+                    0, 0), # stream_assoc_id, slot
+                exchange.priority) 
             exchange._req_state = ExchangeStates.STARTED
     
     def _req_headers(self, exchange, req_hdrs):
         if self._ensure_can_send(exchange):
             req_hdrs = clean_headers(req_hdrs, req_remove_hdrs)
             self._queue_frame(
-                exchange.priority,
                 HeadersFrame(
                     Flags.FLAG_NONE,
                     exchange.stream_id,
-                    req_hdrs))
+                    req_hdrs),
+                exchange.priority)
     
     def _req_body(self, exchange, chunk):
         if self._ensure_can_send(exchange) and chunk is not None:
             self._queue_frame(
-                exchange.priority,
                 DataFrame(
                     Flags.FLAG_NONE,
                     exchange.stream_id, 
-                    chunk))
+                    chunk),
+                exchange.priority)
     
     def _req_done(self, exchange):
         if self._ensure_can_send(exchange):
             self._queue_frame(
-                exchange.priority,
                 DataFrame(
                     Flags.FLAG_FIN,
                     exchange.stream_id, 
-                    b''))
+                    b''),
+                exchange.priority)
             exchange._req_state = ExchangeStates.DONE
             self._set_read_timeout(exchange, 'start')
                     
     ### Output-related methods called by common.SpdySession
 
-    def _queue_frame_do(self, priority, frame):
-        self._output_do(frame.serialize(self))
+    def _queue_frame(self, frame, priority=Priority.MIN):
+        self.emit('output', frame)
+        self._output_bytes(frame.serialize(self))
         
-    def _output_do(self, chunk):
+    def _output_bytes(self, chunk):
         self._output_buffer.append(chunk)
         self._output(b''.join(self._output_buffer))
         if self.is_active:
@@ -282,7 +305,7 @@ class SpdyClientSession(SpdySession):
         return False
         
     def _init_output(self):
-        self._output_do(b'')
+        self._output_bytes(b'')
                         
     ### TCP handling methods
     
@@ -514,25 +537,17 @@ class SpdyClient(EventEmitter):
         self._loop = loop or global_loop
         self._loop.on('stop', self.shutdown)
 
-    def session(self, origin):
+    def session(self, origin, wrapper=None):
         """
         Find an idle connection for (host, port), or create a new one.
         """
         session = self._sessions.get(origin, None)
-        if not session or not session.is_active:
-            session = self.spdy_session_class(self)
-            if self._tls_config is None:
-                tcp_client = self.tcp_client_class(self._loop)
-            else:
-                tcp_client = self.tls_client_class(self._tls_config, self._loop)
-            tcp_client.on('connect', session._bind)
-            tcp_client.on('connect_error', session._handle_connect_error)
-            (host, port) = origin # FIXME: add scheme?
-            tcp_client.connect(host, port, self._connect_timeout)
+        if session is None:
+            session = self.spdy_session_class(self, origin)
             self._sessions[origin] = session
         return session
-        
-    def _remove_session(self, session):
+    
+    def remove_session(self, session):
         """
         Removes (closed) session from dictionary.
         """

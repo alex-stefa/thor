@@ -165,7 +165,13 @@ class SpdyServerSession(SpdySession):
         self.frame_handlers[FrameTypes.HEADERS].append(self._frame_headers)
         self.frame_handlers[FrameTypes.RST_STREAM].append(self._frame_rst_stream)
         self._bind(tcp_conn)
-            
+        
+    def _reset(self):
+        self._write_queue = [[] for x in Priority.range]
+        self._write_pending = False
+        self._output_paused = False
+        SpdySession.reset(self)
+                    
     ### Exchange response methods 
     
     def _init_pushed_exchg(self, assoc_exchg):
@@ -241,21 +247,21 @@ class SpdyServerSession(SpdySession):
             res_hdrs.append((':host', host if host else ''))
             res_hdrs.append((':path', path if path else ''))
             self._queue_frame(
-                exchange.priority,
                 SynStreamFrame(
                     Flags.FLAG_FIN if done else Flags.FLAG_UNIDIRECTIONAL,
                     exchange.stream_id, 
                     res_hdrs,
                     exchange.priority,
                     exchange._stream_assoc_id,
-                    0))
+                    0),
+                exchange.priority)
         else:
             self._queue_frame(
-                exchange.priority,
                 SynReplyFrame(
                     Flags.FLAG_FIN if done else Flags.FLAG_NONE,
                     exchange.stream_id, 
-                    res_hdrs))
+                    res_hdrs),
+                exchange.priority)
         exchange._res_state = (ExchangeStates.DONE if done 
             else ExchangeStates.STARTED)
             
@@ -263,29 +269,29 @@ class SpdyServerSession(SpdySession):
         if self._ensure_can_send(exchange):
             res_hdrs = clean_headers(res_hdrs, res_remove_hdrs)
             self._queue_frame(
-                exchange.priority,
                 HeadersFrame(
                     Flags.FLAG_NONE,
                     exchange.stream_id, 
-                    res_hdrs))
+                    res_hdrs),
+                exchange.priority)
     
     def _res_body(self, exchange, chunk):
         if self._ensure_can_send(exchange) and chunk is not None:
             self._queue_frame(
-                exchange.priority,
                 DataFrame(
                     Flags.FLAG_NONE,
                     exchange.stream_id, 
-                    chunk))
+                    chunk),
+                exchange.priority)
     
     def _res_done(self, exchange):
         if self._ensure_can_send(exchange):
             self._queue_frame(
-                exchange.priority,
                 DataFrame(
                     Flags.FLAG_FIN,
                     exchange.stream_id, 
-                    b''))
+                    b''),
+                exchange.priority)
             exchange._res_state = ExchangeStates.DONE
 
     ### Output-related methods called by common.SpdySession
@@ -318,7 +324,8 @@ class SpdyServerSession(SpdySession):
             self._loop.schedule(0, self._write_frame_callback)
             self._write_pending = True
 
-    def _queue_frame_do(self, priority, frame):
+    def _queue_frame(self, frame, priority=Priority.MIN):
+        self.emit('output', frame)
         self._output_paused = False
         self._write_queue[priority].append(frame)
         self._schedule_write()
@@ -328,7 +335,6 @@ class SpdyServerSession(SpdySession):
         
     def _init_output(self):
         self._schedule_write()
-        # self._output(b'')
         
     ### TCP handling methods 
             

@@ -374,18 +374,21 @@ class SpdyFrame(object):
                 if self.flags != Flags.FLAG_NONE else '')
         
     @staticmethod
-    def _serialize_control_frame(type, flags, data):
+    def _serialize_control_frame(type, flags, data, version=SPDY_VERSION):
         # TODO: check that data len doesn't overflow
         return struct.pack("!HHI%ds" % len(data),
-                0x8000 + SPDY_VERSION, # control bit (=1)
+                0x8000 + version, # control bit (=1)
                 type,
                 (flags << 24) + len(data),
                 data)
 
     @staticmethod
-    def _serialize_headers(hdr_tuples):
-        hdr_tuples.sort() # required by Chromium
-        hdr_tuples = collapse_dups(hdr_tuples)
+    def _serialize_headers(hdr_tuples, dups=False, sort=True):
+        hdr_tuples = [(n or '', v or '') for (n, v) in hdr_tuples]
+        if sort:
+            hdr_tuples.sort() # required by Chromium
+        if not dups:
+            hdr_tuples = collapse_dups(hdr_tuples)
         fmt = ["!I"]
         args = [len(hdr_tuples)]
         for (n, v) in hdr_tuples:
@@ -683,11 +686,7 @@ class SpdyMessageHandler(object):
                     'First frame in SPDY session is not a control frame.'),
                     GoawayReasons.PROTOCOL_ERROR, None, True)
                 return
-            self._input_frame_version = header & ((1 << 15) - 1)
-            if self._valid_frame_version(b''):
-                self._input_state = InputStates.WAITING
-            else:
-                return
+            self._input_state = InputStates.WAITING
         if self._input_state == InputStates.WAITING: # waiting for a complete frame header
             if len(data) >= 8:
                 (d1, self._input_flags, d2, d3) = struct.unpack_from("!IBBH", data)
@@ -981,7 +980,7 @@ class SpdyMessageHandler(object):
         if size > self._max_control_frame_size:
             if len(data) >= 4 and (self._input_frame_type in 
                 [FrameTypes.SYN_STREAM, FrameTypes.SYN_REPLY, FrameTypes.HEADERS]):
-                stream_id = struct.unpack_from("!I", data) & STREAM_MASK
+                stream_id = struct.unpack_from("!I", data)[0] & STREAM_MASK
                 self._handle_error(err, 
                     StatusCodes.FRAME_TOO_LARGE, stream_id, True)
                 self._handle_error(None, 
@@ -1010,14 +1009,26 @@ class SpdyMessageHandler(object):
             return True
         err = error.SpdyVersionError('Version %d.' % self._input_frame_version)
         if self._input_frame_version != SPDY_VERSION:
+            """
+            From SPDY/2 draft
+            
+            SPDY does lazy version checking on receipt of any control frame,
+            and does version enforcement only on SYN_STREAM frames.  
+            If an endpoint receives a SYN_STREAM frame with an unsupported 
+            version, the endpoint must return a RST_STREAM frame with the 
+            status code UNSUPPORTED_VERSION.  For any other type of control 
+            frame, the frame must be ignored.
+            
+            see: http://www.chromium.org/spdy/spdy-protocol/spdy-protocol-draft2
+            """
             if len(data) >= 4 and (self._input_frame_type in 
                 [FrameTypes.SYN_STREAM, FrameTypes.SYN_REPLY, FrameTypes.HEADERS]):
-                stream_id = struct.unpack_from("!I", data) & STREAM_MASK
+                stream_id = struct.unpack_from("!I", data)[0] & STREAM_MASK
                 self._handle_error(err,
                     StatusCodes.UNSUPPORTED_VERSION, stream_id, True)
             else:
                 self._handle_error(err,
-                    GoawayReasons.PROTOCOL_ERROR, None, True)
+                    GoawayReasons.PROTOCOL_ERROR, None, False)
             return False
         return True
         
@@ -1026,9 +1037,17 @@ class SpdyMessageHandler(object):
         Check for supported frame type.
         """
         if self._input_frame_type not in FrameTypes.values:
+            """
+            From SPDY/2 draft
+            
+            If an endpoint receives a control frame for a type it does not 
+            recognize, it must ignore the frame.
+            
+            see: http://www.chromium.org/spdy/spdy-protocol/spdy-protocol-draft2
+            """
             self._handle_error(error.ParsingError(
                 'Unsupported frame type %d.' % self._input_frame_type),
-                GoawayReasons.PROTOCOL_ERROR, None, True)
+                GoawayReasons.PROTOCOL_ERROR, None, False)
             return False
         return True
 

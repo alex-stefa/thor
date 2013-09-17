@@ -400,7 +400,6 @@ class TcpClient(EventSource):
         if close:
             self.sock.close()
 
-
 if __name__ == "__main__":
     # quick demo server
     from thor.loop import run, stop

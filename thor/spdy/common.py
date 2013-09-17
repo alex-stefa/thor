@@ -277,19 +277,29 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         close()
     """
     def __init__(self, is_client, idle_timeout=None, loop=None):
-        SpdyMessageHandler.__init__(self)
         EventEmitter.__init__(self)
-        self.exchanges = dict()
         self.tcp_conn = None
         self._loop = loop or global_loop
-        self._origin = None # (host, port)
         self._idle_timeout = idle_timeout if int(idle_timeout or 0) > 0 else None
         self._idle_timeout_ev = None
+        self._is_client = is_client
+        self._origin = None # (host, port)
+        self.frame_handlers = defaultdict(list)
+        self.frame_handlers[FrameTypes.PING] = [self._frame_ping]
+        self.frame_handlers[FrameTypes.GOAWAY] = [self._frame_goaway]
+        self.frame_handlers[FrameTypes.SETTINGS] = [self._frame_settings]
+        self.frame_handlers[FrameTypes.CREDENTIAL] = [self._frame_credential]
+        self.frame_handlers[FrameTypes.WINDOW_UPDATE] = [self._frame_window_update]
+        SpdySession._reset(self)
+
+    def _reset(self):
+        SpdyMessageHandler.__init__(self)
+        self._clear_idle_timeout()
         self._sent_goaway = False
         self._received_goaway = False
         self._closing = False
         self._pings = dict()
-        if is_client:
+        if self._is_client:
             self._highest_created_stream_id = -1
             self._highest_accepted_stream_id = 0
             self._valid_local_stream_id = self._valid_client_stream_id
@@ -301,12 +311,7 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             self._valid_local_stream_id = self._valid_server_stream_id
             self._valid_remote_stream_id = self._valid_client_stream_id
             self._highest_ping_id = 0
-        self.frame_handlers = defaultdict(list)
-        self.frame_handlers[FrameTypes.PING] = [self._frame_ping]
-        self.frame_handlers[FrameTypes.GOAWAY] = [self._frame_goaway]
-        self.frame_handlers[FrameTypes.SETTINGS] = [self._frame_settings]
-        self.frame_handlers[FrameTypes.CREDENTIAL] = [self._frame_credential]
-        self.frame_handlers[FrameTypes.WINDOW_UPDATE] = [self._frame_window_update]
+        self.exchanges = dict()
         
     def __repr__(self):
         status = [self.__class__.__module__ + "." + self.__class__.__name__]
@@ -356,8 +361,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self._sent_goaway = True
         if reason is not None:
             self._queue_frame(
-                Priority.MAX,
-                GoawayFrame(max(self._highest_accepted_stream_id, 0), reason))
+                GoawayFrame(max(self._highest_accepted_stream_id, 0), reason),
+                Priority.MAX)
         
     def close(self, reason=GoawayReasons.OK):
         """
@@ -369,8 +374,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         self._sent_goaway = True
         if reason is not None:
             self._queue_frame(
-                Priority.MAX,
-                GoawayFrame(max(self._highest_accepted_stream_id, 0), reason))
+                GoawayFrame(max(self._highest_accepted_stream_id, 0), reason),
+                Priority.MAX)
         self._close_active_exchanges(error.ConnectionClosedError(
                 'Local endpoint has closed the connection.'))
         if self._is_write_pending():
@@ -389,13 +394,9 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         
     ### Output methods to be implemented by inheriting classes
 
-    def _queue_frame(self, priority, frame):
-        self.emit('output', frame)
-        self._queue_frame_do(priority, frame)
-
-    def _queue_frame_do(self, priority, frame):
+    def _queue_frame(self, frame, priority=Priority.MIN):
         raise NotImplementedError
-        
+
     def _is_write_pending(self):
         raise NotImplementedError
         
@@ -416,18 +417,18 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         """
         Binds the session to a TCP connection; should be called only once.
         """
-        self.tcp_conn = tcp_conn
         self._origin = (tcp_conn.host, tcp_conn.port)
+        self.tcp_conn = tcp_conn
         self.tcp_conn.on('data', self._handle_input)
         self.tcp_conn.on('close', self._handle_closed)
         self.tcp_conn.on('pause', self._handle_pause)
         self._clear_idle_timeout()
         self._set_idle_timeout()
         self._closing = False
+        self.emit('bound', tcp_conn)
         self._init_output() # kick the output buffer
         # FIXME: should we wait for when we need to send data first?
         self.tcp_conn.pause(False)
-        self.emit('bound', tcp_conn)
     
     def _handle_closed(self):
         """
@@ -475,8 +476,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
                     self.emit('error', err)
                 if status is not None:
                     self._queue_frame(
-                        Priority.MAX,
-                        RstStreamFrame(exchange.stream_id, status))
+                        RstStreamFrame(stream_id, status),
+                        Priority.MAX)
             
     def _close_exchange(self, exchange, status=None):
         """
@@ -486,8 +487,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         exchange._res_state = ExchangeStates.DONE
         if status is not None:
             self._queue_frame(
-                Priority.MAX,
-                RstStreamFrame(exchange.stream_id, status))
+                RstStreamFrame(exchange.stream_id, status),
+                Priority.MAX)
         # TODO: when to remove closed exchange from self.exchanges?
     
     def _close_active_exchanges(self, err=None):
@@ -509,8 +510,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
         ping_timer._is_active = True
         self._pings[ping_timer._ping_id] = ping_timer
         self._queue_frame(
-            Priority.MAX,
-            PingFrame(ping_timer._ping_id))
+            PingFrame(ping_timer._ping_id),
+            Priority.MAX)
         ping_timer._ping_timestamp = time.time()
         ping_timer._pong_timestamp = None
         if ping_timer._ping_timeout and ping_timer._ping_timeout_ev is None:
@@ -652,8 +653,8 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
             self.emit('error', error.StreamIdError(
                 'Invalid or inactive stream referenced by ID %d.' % stream_id))
             self._queue_frame(
-                Priority.MAX,
-                RstStreamFrame(stream_id, StatusCodes.INVALID_STREAM))
+                RstStreamFrame(stream_id, StatusCodes.INVALID_STREAM),
+                Priority.MAX)
         return None
        
     def _header_error(self, hdr_tuples, hdr_names):
@@ -690,10 +691,10 @@ class SpdySession(SpdyMessageHandler, EventEmitter):
     def _frame_ping(self, frame):
         if (frame.ping_id % 2) != (self._highest_ping_id % 2):
             self._queue_frame(
-                Priority.MAX,
-                PingFrame(frame.ping_id))
+                PingFrame(frame.ping_id),
+                Priority.MAX)
         else:
-            self._notify_ping(frame._ping_id, success=True)
+            self._notify_ping(frame.ping_id, success=True)
 
     def _frame_goaway(self, frame):
         self._received_goaway = True
