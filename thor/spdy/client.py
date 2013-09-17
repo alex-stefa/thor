@@ -537,7 +537,7 @@ class SpdyClient(EventEmitter):
         self._loop = loop or global_loop
         self._loop.on('stop', self.shutdown)
 
-    def session(self, origin, wrapper=None):
+    def session(self, origin):
         """
         Find an idle connection for (host, port), or create a new one.
         """

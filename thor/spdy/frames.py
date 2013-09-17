@@ -703,6 +703,9 @@ class SpdyMessageHandler(object):
             else:
                 self._input_buffer = data
         elif self._input_state == InputStates.READING_FRAME_DATA:
+            if not self._valid_frame_size(data):
+                self._input_buffer = data
+                return
             if len(data) >= self._input_frame_len:
                 frame_data = data[:self._input_frame_len]
                 rest = data[self._input_frame_len:]
@@ -989,6 +992,17 @@ class SpdyMessageHandler(object):
                 self._handle_error(err,
                     GoawayReasons.INTERNAL_ERROR, None, True)
             return False
+        """
+        Check exact frame lengths for certain fram types.
+        """
+        if self._input_frame_type in [FrameTypes.PING, FrameTypes.GOAWAY,
+            FrameTypes.RST_STREAM, FrameTypes.WINDOW_UPDATE]:
+            if self._input_frame_len != MinFrameLen[self._input_frame_type]:
+                self._handle_error(error.ParsingError(
+                    'Frame length %d is incorrect for a %s frame.' %
+                    (size, FrameTypes.str[self._input_frame_type])),
+                    GoawayReasons.INTERNAL_ERROR, None, True)
+                return False
         """
         Check that read frame length is large enough to cover fixed size
         fields in each frame type.
