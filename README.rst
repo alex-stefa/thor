@@ -1,3 +1,7 @@
+
+**Brach modified to add SPDY3 suport. Original README follows.**
+
+
 Thor - Easy Evented Intermediation
 ==================================
 
